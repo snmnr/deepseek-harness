@@ -1,0 +1,14 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "^(write|edit)$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{{HOOKS_DIR}}/affine-docs-hook.ps1\"",
+          "timeout": 15
+        }
+      ]
+    }
+  ]
+}
