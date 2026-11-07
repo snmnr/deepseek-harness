@@ -35,7 +35,7 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-import { fireHookCommand, captureHookStdout, basePayload, type BridgeConfig } from './capture.ts'
+import { fireHookCommand, captureHookStdout, runHookCommand, basePayload, type BridgeConfig } from './capture.ts'
 import { CheckpointState, guardLevel, writeCheckpoint } from './checkpoint.ts'
 import { ExportBuffer, writeExport } from './export.ts'
 import { writeStatusFile, type UiStatusExtra } from './status.ts'
@@ -86,6 +86,12 @@ interface SessionState {
   exportBuffer: ExportBuffer
   /** Set after the first recall flag is written for this session id. */
   cwd: string | undefined
+  /**
+   * Serializes assistant captures so the Stop flush observes the final
+   * message; without it the two hook subprocesses race on the same buffer and
+   * the stop hook can read one event short of the threshold.
+   */
+  capture: Promise<unknown>
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -110,6 +116,7 @@ export function apply(ctx: Context, config: Config): void {
         checkpoint: new CheckpointState(),
         exportBuffer: new ExportBuffer(cwd),
         cwd,
+        capture: Promise.resolve(),
       }
       states.set(sid, st)
     }
@@ -190,13 +197,18 @@ export function apply(ctx: Context, config: Config): void {
       // Buffering the assistant conclusion is fire-and-forget; the wrapper
       // dedupes against the previous assistant event (same contract as CC's stop()).
       if (text && st) {
-        fireHookCommand(resolved, 'assistant', { ...basePayload(sid, st.cwd, 'Stop'), text }, log)
+        st.capture = st.capture
+          .then(() => runHookCommand(resolved, 'assistant', { ...basePayload(sid, st.cwd, 'Stop'), text }, log))
+          .catch(() => undefined)
       }
       return
     }
     if (event.type === 'compaction/start') {
-      // PreCompact equivalent: flush before history is compressed away.
-      fireHookCommand(resolved, 'flush', basePayload(sid, st?.cwd, 'PreCompact'), log)
+      // PreCompact equivalent: flush before history is compressed away, after
+      // any in-flight assistant capture has landed.
+      const flush = (): void => fireHookCommand(resolved, 'flush', basePayload(sid, st?.cwd, 'PreCompact'), log)
+      if (st) void st.capture.then(flush)
+      else flush()
     }
   })
 
@@ -204,6 +216,10 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('agent/turn-stopping', async ({ agent }) => {
     const st = stateFor(agent)
     const sid = String(agent.session.header.id)
+    // The assistant capture must land before Stop reads the buffer; the two
+    // run as separate python subprocesses with no shared lock, so firing Stop
+    // immediately can miss the turn's final message and skip the flush.
+    await st.capture
     const payload = { ...basePayload(sid, st.cwd, 'Stop'), stop_hook_active: false }
     fireHookCommand(resolved, 'stop', payload, log)
     // Guard metric is the CURRENT context occupancy (tokenMeter.measure), not
@@ -233,9 +249,10 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // --- SessionEnd + distill export → agent/disposed (emit) ---
-  ctx.on('agent/disposed', ({ agent }) => {
+  ctx.on('agent/disposed', async ({ agent }) => {
     const sid = String(agent.session.header.id)
     const st = states.get(sid)
+    await st?.capture
     fireHookCommand(resolved, 'session-end', basePayload(sid, st?.cwd, 'SessionEnd'), log)
     // Mark the UI status file ended (the panel shows a tombstone until the
     // workspace file channel reports the change).
