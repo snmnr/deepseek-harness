@@ -74,6 +74,10 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 `
 
 > **patch 会替换 mcp-manager 的整个 `servers` map**。如已配置其他 MCP server，
 > 请把它们的定义重述进 patch 块内（安装器不会自动迁移）。
+>
+> marker 块（`# mem0-claude-kit:dsh begin` … `end`）之间的内容归安装器所有，
+> 重装时整体替换。你自己的 profile 配置（模型、provider、主题等）必须写在
+> marker 块**外**，否则会被静默覆盖。
 
 ## 卸载
 
