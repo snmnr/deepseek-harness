@@ -206,14 +206,18 @@ export function apply(ctx: Context, config: Config): void {
     const sid = String(agent.session.header.id)
     const payload = { ...basePayload(sid, st.cwd, 'Stop'), stop_hook_active: false }
     fireHookCommand(resolved, 'stop', payload, log)
+    // Guard metric is the CURRENT context occupancy (tokenMeter.measure), not
+    // the cumulative billed usage the ring buffer accumulates; the window comes
+    // from the route the session last resolved.
+    const window = contextWindowOf(agent)
+    const contextTokens = contextTokensOf(ctx, agent)
     if (config.checkpoints !== false && st.checkpoint.shouldWrite()) {
-      const window = contextWindowOf(ctx, agent)
-      const level = guardLevel(st.checkpoint.tokens, window)
+      const level = guardLevel(contextTokens, window)
       if (level) {
         // Fold a warning into the next step via steer — the model sees it and
         // can wrap up or surface it to the user (mirrors context_guard warn).
         agent.steer(createUserMessage({
-          content: [{ type: 'text', text: `<system-reminder>上下文占用${level === 'critical' ? '已接近上限' : '较高'}（约 ${st.checkpoint.tokens} tokens）。建议尽快收尾或 /handoff。</system-reminder>` } satisfies ContentBlock] as ContentBlock[],
+          content: [{ type: 'text', text: `<system-reminder>上下文占用${level === 'critical' ? '已接近上限' : '较高'}（约 ${contextTokens} tokens）。建议尽快收尾或 /handoff。</system-reminder>` } satisfies ContentBlock] as ContentBlock[],
           source: CONTEXT_SOURCE,
         }))
       }
@@ -223,7 +227,8 @@ export function apply(ctx: Context, config: Config): void {
     // state, guard level). Session-end erases it below.
     void writeStatusFile(st.cwd, sid, resolved, log, {
       tokens: st.checkpoint.tokens,
-      guardLevel: guardLevel(st.checkpoint.tokens, contextWindowOf(ctx, agent)) ?? null,
+      contextTokens,
+      guardLevel: guardLevel(contextTokens, window) ?? null,
     })
   })
 
@@ -298,20 +303,24 @@ function safeJsonPreview(args: unknown): string {
   }
 }
 
-/** Context window size for the guard, best-effort (0 → guard disabled). */
-function contextWindowOf(ctx: Context, agent: Agent): number {
-  // The token meter's contextPressure projection is the durable source; when
-  // absent the guard stays off rather than guessing a window size.
+/** Context window size from the route the session resolved (0 → guard disabled). */
+function contextWindowOf(agent: Agent): number {
   try {
-    const meter = ctx.get('tokenMeter') as { contextPressure?: (s: unknown) => { projectedTokens?: number; contextWindow?: number } } | undefined
-    const p = meter?.contextPressure?.(agent.session)
-    if (p && typeof p.projectedTokens === 'number' && p.projectedTokens > 0) {
-      return p.contextWindow ?? 0
-    }
+    return agent.session.requestContext()?.contextWindow ?? 0
   } catch {
-    // meter absent — fine
+    return 0
   }
-  return 0
+}
+
+/** Tokens currently occupying the session context (tokenMeter; 0 when absent). */
+function contextTokensOf(ctx: Context, agent: Agent): number {
+  try {
+    const meter = ctx.get('tokenMeter') as { measure?: (session: unknown) => { totalTokens?: number } } | undefined
+    const measured = meter?.measure?.(agent.session)
+    return typeof measured?.totalTokens === 'number' ? measured.totalTokens : 0
+  } catch {
+    return 0
+  }
 }
 
 function defaultHooksScript(): string {

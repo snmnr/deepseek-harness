@@ -105,6 +105,7 @@ window.__ModuleLoader__.load({ id: 'mem0-dsh-ui', factory: (require) => {
       StatusRow('暂停', paused ? '是' : '否', paused),
       StatusRow('上下文警卫', guard ? String(guard) : '正常', guard === 'critical' || guard === 'urgent'),
       StatusRow('累计 tokens', d.tokens != null ? String(d.tokens) : '-'),
+      d.contextTokens != null ? StatusRow('上下文占用', String(d.contextTokens)) : null,
       d.last_flush_at ? StatusRow('最近落盘', new Date(d.last_flush_at).toLocaleString()) : null,
       StatusRow('数据目录', String(d.data_dir || '-')),
       createElement('div', { style: { marginTop: 8, opacity: 0.55, fontSize: 12 } },

@@ -16,6 +16,8 @@ import { basePayload, captureHookStdout, type BridgeConfig } from './capture.ts'
 export interface UiStatusExtra {
   /** Total tokens recorded by the checkpoint ring buffer this session. */
   tokens?: number
+  /** Tokens currently occupying the session context (tokenMeter). */
+  contextTokens?: number
   /** Context-guard level for the session, or null below warn. */
   guardLevel?: string | null
   /** Where the last checkpoint was written, when one was. */
