@@ -115,6 +115,11 @@ pnpm dsh web     # Settings → MCP 应显示 mem0 connected
 # 会话内：/mem0-status → /mem0-search 测试 → 写几轮对话 → /distill-history
 ```
 
+蒸馏导出只在**进程优雅退出**时写出（终端 Ctrl+C / 正常终止）：`agent/disposed` 是
+emit 事件，`taskkill /F` 或关网页都不会触发。产物为
+`~/.mem0-claude-dsh/exports/<项目slug>/<会话ID>.jsonl`，同时登记到
+`~/.affine-docs/distill/pending.json`（`source: "dsh"`）。
+
 checkpoint 产物写在**会话工作区**的 `notes/_state/last-checkpoint.{json,md}`
 （不可写回退 `~/.dsh/state/checkpoints/<slug>/`）。dsh 未选目录时工作区是
 `<文档>/deepseek-harness/default-workspace`，所以产物不在仓库根目录下——

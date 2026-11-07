@@ -7,7 +7,7 @@
  * @module export
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -88,6 +88,12 @@ function slug(cwd: string): string {
 
 /**
  * Write the export JSONL and append the distill-pending entry.
+ *
+ * File I/O is synchronous on purpose: `agent/disposed` is an emit event, so
+ * nothing awaits this call during process shutdown — an async write can be
+ * cut off after the JSONL lands but before the pending queue's rename (seen
+ * as a stray `pending.json.tmp-<pid>`). Sync I/O finishes before the handler
+ * returns.
  * @returns the export file path, or undefined when there was nothing to write.
  */
 export async function writeExport(
@@ -113,12 +119,17 @@ export async function writeExport(
     }))
   }
 
-  await mkdir(dir, { recursive: true })
-  await writeFile(file, lines.join('\n') + '\n', 'utf8')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, lines.join('\n') + '\n', 'utf8')
 
   try {
-    await mkdir(join(pendingPath, '..'), { recursive: true })
-    const queue = JSON.parse(await readFile(pendingPath, 'utf8').catch(() => '{}')) as { version?: number; items?: Array<Record<string, unknown>> }
+    mkdirSync(join(pendingPath, '..'), { recursive: true })
+    let queue: { version?: number; items?: Array<Record<string, unknown>> } = {}
+    try {
+      queue = JSON.parse(readFileSync(pendingPath, 'utf8')) as typeof queue
+    } catch {
+      // missing or malformed queue: start a fresh one
+    }
     queue.version = 1
     queue.items = queue.items ?? []
     if (!queue.items.some(i => i.sessionId === sessionId)) {
@@ -131,9 +142,8 @@ export async function writeExport(
       })
     }
     const tmp = `${pendingPath}.tmp-${process.pid}`
-    await writeFile(tmp, JSON.stringify(queue, null, 2), 'utf8')
-    const { rename } = await import('node:fs/promises')
-    await rename(tmp, pendingPath)
+    writeFileSync(tmp, JSON.stringify(queue, null, 2), 'utf8')
+    renameSync(tmp, pendingPath)
   } catch {
     // pending queue is best-effort; the export file itself is the durable artifact
   }
