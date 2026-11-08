@@ -247,7 +247,7 @@ $patchBlock = @"
 $PATCH_MARKER_BEGIN
 # ---- mcp-manager：mem0 server（注意：patch 会替换整个 servers map，
 #      如你配置过其他 MCP server，请在此块中一并重述） ----
-- id: mcp
+- id: mcp-manager
   config:
     servers:
       mem0:
