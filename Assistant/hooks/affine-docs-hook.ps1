@@ -26,9 +26,27 @@ function Main {
     if (-not $filePath) { exit 0 }
     if ($filePath -notmatch '\.md$') { exit 0 }
 
+    # dsh 的 PostToolUse payload 不带 cwd；不能依赖 dsh 进程的当前目录
+    # （那通常是启动 dsh 的仓库，而不是会话项目）。改为从被写文件向上找
+    # 含 .affine-docs.config.json 的项目根；payload 带 cwd 时优先用它。
     $cwd = $payload.cwd
     if (-not $cwd) { $cwd = (Get-Location).Path }
-    if (-not (Test-Path (Join-Path $cwd '.affine-docs.config.json'))) { exit 0 }
+    $projectRoot = $null
+    if (Test-Path (Join-Path $cwd '.affine-docs.config.json')) { $projectRoot = $cwd }
+    if (-not $projectRoot) {
+        $target = $filePath
+        if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path $cwd $target }
+        if (Test-Path $target) {
+            $dir = Split-Path -Parent (Resolve-Path $target).Path
+            while ($dir) {
+                if (Test-Path (Join-Path $dir '.affine-docs.config.json')) { $projectRoot = $dir; break }
+                $parent = Split-Path -Parent $dir
+                if (-not $parent -or $parent -eq $dir) { break }
+                $dir = $parent
+            }
+        }
+    }
+    if (-not $projectRoot) { exit 0 }
 
     $node = '{{NODE}}'
     $tool = '{{TOOL}}'
@@ -40,7 +58,7 @@ function Main {
     # 后台发布，不阻塞工具结果；输出进 stderr 由桥记录
     $log = Join-Path $env:USERPROFILE '.mem0-claude-dsh\affine-hook.log'
     try {
-        $out = & $node $tool $cwd --files $filePath 2>&1
+        $out = & $node $tool $projectRoot --files $filePath 2>&1
         Add-Content -Path $log -Value ("[{0}] {1}: {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $filePath, ($out -join ' ')) -Encoding UTF8
         [Console]::Error.WriteLine("affine-docs-hook: 已发布 $filePath")
     } catch {

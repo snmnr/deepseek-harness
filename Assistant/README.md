@@ -36,7 +36,8 @@ Assistant/
 │  ├─ mem0_hooks_dsh.py                  # 包装层：按路径加载套件原 mem0_hooks.py（零改动），
 │  │                                     #   覆写 DATA_DIR/CONFIG_PATH，新增 assistant / ui-status 子命令
 │  ├─ hooks.json                         # AFFiNE 桥配置（PostToolUse matcher 为 dsh 小写工具名）
-│  └─ affine-docs-hook.ps1               # .md 写入 → 后台发布（项目根需有 .affine-docs.config.json）
+│  └─ affine-docs-hook.ps1               # .md 写入 → 后台发布（项目根需有 .affine-docs.config.json；
+│                                        #   dsh payload 不带 cwd，从文件路径向上找项目根）
 ├─ skills/                               # 13 个 skill 模板（{{HOOKS}}/{{TOOL}}/{{ARCHIVE}}/{{DISTILL}} 占位符）
 ├─ tools/                                # distill-history.mjs（--projects/DSH_EXPORT_DIR 改动版）等副本
 ├─ templates/agents-block.md             # AGENTS.md 引导块
@@ -169,7 +170,13 @@ UI 包为手写 closure-factory bundle（无需构建），patch 里以
 - 插件文件必须位于 `~/.dsh/profiles/<profile>/plugins/` 下。dsh 只对 profile 树内的
   模块做 `@deepseek-ai/*` 导入路由；放到树外（如 `~/.mem0-claude-dsh/plugin`）时
   插件会在启动阶段 `failed to import`，桥不激活且不采集任何事件。
-- skill 的 `$ARGUMENTS` 透传行为依赖 dsh skill-filesystem 实现，若不透传需调整措辞。
+- **生成文件必须无 BOM**：dsh 的 skill parser 要求首行恰好是 `---`，Node 的
+  `JSON.parse`（hooks.json）也拒绝 BOM；PS 5.1 的 `Set-Content -Encoding utf8`
+  会写 BOM，因此安装器统一用 `Write-Utf8NoBom`（`.ps1` 仍保留 BOM）。
+- **dsh 不替换 `$ARGUMENTS`**：`dsh-tool-skill` 在 pre-step 只注入 skill 正文，
+  用户消息原样进模型（`/name 参数` 也是原文）。因此 dsh 侧 skills 已改成
+  「用户消息里 `/name` 之后的文字」措辞；Claude Code 侧仍用 `$ARGUMENTS`，
+  两边不再共用同一份措辞。
 - 状态栏/通知：dsh 无系统通知 API；P9 的 client 插件提供右栏面板与会话头状态指示，
   任务完成提醒由 dsh 自带 completion-reminder 承担。
 - **跨侧记忆互通取决于 `metadata.project` 标签。** 套件按「工作目录名」打标并在召回时

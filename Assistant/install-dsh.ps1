@@ -28,6 +28,9 @@
 .PARAMETER ApiUrl / ApiKey / UserId
   mem0 连接参数。ApiKey 只写入 .credentials.yaml，不进 patch 明文。
 
+.PARAMETER InstallDir
+  运行时目录（默认 ~/.mem0-claude-dsh）。主要用于隔离测试。
+
 .PARAMETER DryRun
   只打印计划，不写任何文件。
 
@@ -42,13 +45,13 @@ param(
     [string]$ApiUrl,
     [string]$ApiKey,
     [string]$UserId,
+    [string]$InstallDir = (Join-Path $env:USERPROFILE '.mem0-claude-dsh'),
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 $AssistDir = Split-Path -Parent $PSCommandPath   # Assistant/ 目录
 $Home2     = $env:USERPROFILE
-$InstallDir   = Join-Path $Home2 '.mem0-claude-dsh'
 $DshHome      = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $Home2 '.dsh' }
 $AgentsHome   = if ($env:DSH_AGENTS_HOME) { $env:DSH_AGENTS_HOME } else { Join-Path $Home2 '.agents' }
 $SkillsDir    = Join-Path $DshHome 'skills'
@@ -68,6 +71,14 @@ $AGENTS_MARKER_END   = '<!-- mem0-dsh:end -->'
 
 function Write-Plan { param($msg) if ($DryRun) { Write-Host "[dryrun] $msg" -ForegroundColor Cyan } else { Write-Host $msg } }
 
+# PS 5.1 的 Set-Content -Encoding utf8 会写 BOM。BOM 会让两类读取失败：
+#   - dsh skill parser 要求首行恰好是 `---`（BOM 前缀导致 frontmatter 不识别，skill 被忽略）
+#   - Node 的 JSON.parse（hooks.json）不接受 BOM
+# 所以生成的非 .ps1 文件一律用无 BOM UTF-8；.ps1 保持 BOM 供 Windows PowerShell 读中文。
+function Write-Utf8NoBom { param([string]$Path, [string]$Text)
+    [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
+}
+
 # ---------- 前置检查 ----------
 Write-Host '== mem0-claude-kit → dsh 安装 ==' -ForegroundColor Green
 if ($DryRun) { Write-Host '（DryRun 模式：不写任何文件）' -ForegroundColor Yellow }
@@ -82,18 +93,33 @@ foreach ($req in @(
 }
 
 $py = $null
-# 优先 py launcher 的最新 Python 3（PATH 上的 python 可能是旧版本，如 3.6），
-# 其次 PATH 上的 python；都拿不到再报错。
+# 套件脚本要求 Python 3.10+。`py -3` 可能指向很旧的解释器（本机 py -3 是 3.12，
+# 但 PATH 上的 python 是 3.6；某些机器 py -3 也会落到 3.6），所以先读
+# `py -0p` 的解释器清单挑 >=3.10 的，再退回 PATH 上的 python；找不到就报错，
+# 不把低版本写进 patch。
 $pyLauncher = (Get-Command py -ErrorAction SilentlyContinue).Source
 if ($pyLauncher) {
-    $candidate = & $pyLauncher -3 -c "import sys; print(sys.executable)" 2>$null
-    if ($LASTEXITCODE -eq 0 -and $candidate) { $py = ($candidate | Select-Object -First 1).Trim() }
+    try { $pyList = @(& $pyLauncher -0p) } catch { $pyList = @() }
+    foreach ($line in $pyList) {
+        if ($line -match '^\s*-V:(\d+)\.(\d+)(?:\s+\*)?\s+(.+\.exe)\s*$') {
+            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
+            if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 10)) { $py = $Matches[3].Trim(); break }
+        }
+    }
 }
-if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }
-if (-not $py) { throw '未找到 python，请先安装 Python 3.10+' }
-if ((& $py --version 2>&1) -match 'Python 3\.([0-9]+)' -and [int]$Matches[1] -lt 10) {
-    Write-Warning "所选 Python 版本偏低（$(& $py --version 2>&1)），套件脚本需要 3.10+ 语法；请用 -Profile 环境变量或 PATH 指向新版 Python"
+if (-not $py) {
+    $pathPython = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if ($pathPython) {
+        try { $v = @(& $pathPython -c "import sys; print(sys.version_info[0], sys.version_info[1])") } catch { $v = @() }
+        $first = $v | Select-Object -First 1
+        if ($first -match '^(\d+)\s+(\d+)') {
+            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
+            if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 10)) { $py = $pathPython }
+        }
+    }
 }
+if (-not $py) { throw '未找到 Python 3.10+（py launcher 清单与 PATH 都没有），请安装后重试' }
+Write-Host "   Python: $py"
 $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
 if (-not $uv) { Write-Warning '未找到 uv；mem0-mcp venv 预建将跳过（首次启动会自动 sync，较慢）' }
 
@@ -144,7 +170,7 @@ if (-not $DryRun) {
     $hooksJson = Get-Content (Join-Path $AssistDir 'hooks\hooks.json') -Raw -Encoding UTF8
     $hooksDirFwd = (Join-Path $InstallDir 'hooks') -replace '\\','/'
     $hooksJson = $hooksJson.Replace('{{HOOKS_DIR}}', $hooksDirFwd)
-    Set-Content (Join-Path $InstallDir 'hooks\hooks.json') $hooksJson -Encoding utf8
+    Write-Utf8NoBom (Join-Path $InstallDir 'hooks\hooks.json') $hooksJson
     $affHook = Get-Content (Join-Path $AssistDir 'hooks\affine-docs-hook.ps1') -Raw -Encoding UTF8
     $nodePath = (Get-Command node -ErrorAction SilentlyContinue).Source
     if (-not $nodePath) { $nodePath = 'node' }
@@ -182,7 +208,7 @@ if (-not $DryRun) {
     Get-ChildItem (Join-Path $AssistDir 'skills') -Filter '*.md' | ForEach-Object {
         $c = Get-Content $_.FullName -Raw -Encoding UTF8
         $c = $c.Replace('{{HOOKS}}', $hooksPy).Replace('{{TOOL}}', $toolMjs).Replace('{{ARCHIVE}}', $arcMjs).Replace('{{DISTILL}}', $disMjs)
-        Set-Content (Join-Path $SkillsDir $_.Name) $c -Encoding utf8 -NoNewline
+        Write-Utf8NoBom (Join-Path $SkillsDir $_.Name) $c
     }
     Write-Host "   已安装 $((Get-ChildItem (Join-Path $AssistDir 'skills') -Filter '*.md').Count) 个 skills"
 }
@@ -191,8 +217,8 @@ if (-not $DryRun) {
 Write-Plan "7. 写 mem0 连接配置 → $DataDir\config.json"
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force $DataDir | Out-Null
-    @{ api_url = $ApiUrl; api_key = $ApiKey; user_id = $UserId } | ConvertTo-Json |
-        Set-Content (Join-Path $DataDir 'config.json') -Encoding utf8
+    $cfgJson = @{ api_url = $ApiUrl; api_key = $ApiKey; user_id = $UserId } | ConvertTo-Json
+    Write-Utf8NoBom (Join-Path $DataDir 'config.json') $cfgJson
 }
 
 # ---------- 5. 凭证（.credentials.yaml refs 段） ----------
@@ -221,13 +247,15 @@ if ($ApiKey) {
                         if ($l -match '^refs:') { $out += "  MEM0_API_KEY: $ApiKey" }
                     }
                 }
-                Set-Content $CredPath ($out -join "`r`n") -Encoding utf8
+                Write-Utf8NoBom $CredPath ($out -join "`r`n")
             } else {
-                Add-Content $CredPath "`r`nrefs:`r`n  MEM0_API_KEY: $ApiKey" -Encoding utf8
+                $existingText = Get-Content $CredPath -Raw -Encoding UTF8
+                if ($null -eq $existingText) { $existingText = '' }
+                Write-Utf8NoBom $CredPath ($existingText.TrimEnd([char[]]"`r`n") + "`r`nrefs:`r`n  MEM0_API_KEY: $ApiKey`r`n")
             }
         } else {
             New-Item -ItemType Directory -Force $DshHome | Out-Null
-            Set-Content $CredPath "version: 1`r`nrefs:`r`n  MEM0_API_KEY: $ApiKey" -Encoding utf8
+            Write-Utf8NoBom $CredPath "version: 1`r`nrefs:`r`n  MEM0_API_KEY: $ApiKey`r`n"
         }
     }
 } else {
@@ -285,16 +313,17 @@ if (-not $DryRun) {
     New-Item -ItemType Directory -Force $ProfileDir | Out-Null
     if (Test-Path $PatchPath) {
         $existing = Get-Content $PatchPath -Raw -Encoding UTF8
+        if ($null -eq $existing) { $existing = '' }
         if ($existing -match [regex]::Escape($PATCH_MARKER_BEGIN)) {
             # 幂等替换旧块
             $pattern = "(?s)" + [regex]::Escape($PATCH_MARKER_BEGIN) + ".*?" + [regex]::Escape($PATCH_MARKER_END)
             $merged = [regex]::Replace($existing, $pattern, $patchBlock.Replace('$', '$$'))
-            Set-Content $PatchPath $merged -Encoding utf8 -NoNewline
+            Write-Utf8NoBom $PatchPath $merged
         } else {
-            Add-Content $PatchPath "`r`n$patchBlock" -Encoding utf8
+            Write-Utf8NoBom $PatchPath ($existing.TrimEnd([char[]]"`r`n") + "`r`n" + $patchBlock + "`r`n")
         }
     } else {
-        Set-Content $PatchPath "$patchBlock`r`n" -Encoding utf8
+        Write-Utf8NoBom $PatchPath "$patchBlock`r`n"
     }
 }
 
@@ -303,13 +332,14 @@ Write-Plan "10. 追加引导块 → $AgentsMd"
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force $AgentsHome | Out-Null
     $block = Get-Content (Join-Path $AssistDir 'templates\agents-block.md') -Raw -Encoding UTF8
-    if ((Test-Path $AgentsMd) -and ((Get-Content $AgentsMd -Raw -Encoding UTF8) -match [regex]::Escape($AGENTS_MARKER_BEGIN))) {
-        $existing = Get-Content $AgentsMd -Raw -Encoding UTF8
+    $existingMd = if (Test-Path $AgentsMd) { Get-Content $AgentsMd -Raw -Encoding UTF8 } else { '' }
+    if ($null -eq $existingMd) { $existingMd = '' }
+    if ($existingMd -match [regex]::Escape($AGENTS_MARKER_BEGIN)) {
         $pattern = "(?s)" + [regex]::Escape($AGENTS_MARKER_BEGIN) + ".*?" + [regex]::Escape($AGENTS_MARKER_END)
-        $merged = [regex]::Replace($existing, $pattern, $block.Replace('$', '$$'))
-        Set-Content $AgentsMd $merged -Encoding utf8 -NoNewline
+        $merged = [regex]::Replace($existingMd, $pattern, $block.Replace('$', '$$'))
+        Write-Utf8NoBom $AgentsMd $merged
     } else {
-        Add-Content $AgentsMd "`r`n$block" -Encoding utf8
+        Write-Utf8NoBom $AgentsMd ($existingMd.TrimEnd([char[]]"`r`n") + "`r`n" + $block + "`r`n")
     }
 }
 

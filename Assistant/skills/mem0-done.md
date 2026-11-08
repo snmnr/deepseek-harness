@@ -4,7 +4,7 @@ description: 完成待办：标记 done 并写完成事件。用法：/mem0-done
 ---
 按顺序执行：
 
-1. 用 `mcp__mem0__search_memories` 搜索 `$ARGUMENTS`（top_k=10）。
+1. 用 `mcp__mem0__search_memories` 搜索用户消息里 `/mem0-done` 后面的关键词（top_k=10）。
 2. 只保留 `metadata.category="待办"` 且 `metadata.status="active"` 的候选，
    列出 id、内容、due，**等用户确认要完成哪一条**。
 3. 用户确认后调用 `mcp__mem0__complete_todo`，传 `todo_id`；

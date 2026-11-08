@@ -2,10 +2,11 @@
 name: archive-docs
 description: 把已发布文档按年/月归档到 AFFiNE。用法：/archive-docs [--dry-run] [--project <名称>] [--pattern <前缀>]
 ---
-运行归档器，把当前项目已发布到 AFFiNE 的文档按 `YYYY/MM` 归档：
+运行归档器，把当前项目已发布到 AFFiNE 的文档按 `YYYY/MM` 归档。
+参数 = 用户消息里 `/archive-docs` 之后的文字；没有参数就不加：
 
 ```powershell
-node "{{ARCHIVE}}" . $ARGUMENTS
+node "{{ARCHIVE}}" .
 ```
 
 用法：

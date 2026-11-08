@@ -7,19 +7,22 @@
 .PARAMETER PurgeData
   同时删除 mem0 数据目录 ~/.dsh/mem0（记忆缓冲/配置）。默认保留。
 
+.PARAMETER InstallDir
+  运行时目录（默认 ~/.mem0-claude-dsh）。主要用于隔离测试。
+
 .PARAMETER DryRun
   只打印计划，不删除任何文件。
 #>
 [CmdletBinding()]
 param(
     [string]$Profile = 'web',
+    [string]$InstallDir = (Join-Path $env:USERPROFILE '.mem0-claude-dsh'),
     [switch]$PurgeData,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 $Home2     = $env:USERPROFILE
-$InstallDir   = Join-Path $Home2 '.mem0-claude-dsh'
 $DshHome      = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $Home2 '.dsh' }
 $AgentsHome   = if ($env:DSH_AGENTS_HOME) { $env:DSH_AGENTS_HOME } else { Join-Path $Home2 '.agents' }
 $SkillsDir    = Join-Path $DshHome 'skills'
@@ -43,6 +46,12 @@ $SkillNames = @(
 
 function Write-Plan { param($msg) if ($DryRun) { Write-Host "[dryrun] $msg" -ForegroundColor Cyan } else { Write-Host $msg } }
 
+# 与安装器一致：生成的非 .ps1 文件写无 BOM UTF-8（BOM 会让 dsh skill parser
+# 和 Node 的 JSON.parse 失效）。
+function Write-Utf8NoBom { param([string]$Path, [string]$Text)
+    [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
+}
+
 Write-Host '== mem0-dsh 卸载 ==' -ForegroundColor Green
 if ($DryRun) { Write-Host '（DryRun 模式：不删除任何文件）' -ForegroundColor Yellow }
 
@@ -54,7 +63,7 @@ if (Test-Path $PatchPath) {
         if ($existing -match [regex]::Escape($PATCH_MARKER_BEGIN)) {
             $pattern = "(?s)\r?\n?" + [regex]::Escape($PATCH_MARKER_BEGIN) + ".*?" + [regex]::Escape($PATCH_MARKER_END) + "\r?\n?"
             $merged = [regex]::Replace($existing, $pattern, '')
-            Set-Content $PatchPath $merged -Encoding utf8 -NoNewline
+            Write-Utf8NoBom $PatchPath $merged
         } else {
             Write-Host '   （未发现 marker 块，跳过）'
         }
@@ -81,7 +90,7 @@ if (Test-Path $AgentsMd) {
         if ($existing -match [regex]::Escape($AGENTS_MARKER_BEGIN)) {
             $pattern = "(?s)\r?\n?" + [regex]::Escape($AGENTS_MARKER_BEGIN) + ".*?" + [regex]::Escape($AGENTS_MARKER_END) + "\r?\n?"
             $merged = [regex]::Replace($existing, $pattern, '')
-            Set-Content $AgentsMd $merged -Encoding utf8 -NoNewline
+            Write-Utf8NoBom $AgentsMd $merged
         }
     }
 } else {
@@ -92,8 +101,8 @@ if (Test-Path $AgentsMd) {
 if (Test-Path $CredPath) {
     Write-Plan "4. 摘除凭证 MEM0_API_KEY → $CredPath"
     if (-not $DryRun) {
-        $lines = @(Get-Content $CredPath) | Where-Object { $_ -notmatch '^\s*MEM0_API_KEY:' }
-        Set-Content $CredPath ($lines -join "`r`n") -Encoding utf8
+        $lines = @(Get-Content $CredPath -Encoding UTF8) | Where-Object { $_ -notmatch '^\s*MEM0_API_KEY:' }
+        Write-Utf8NoBom $CredPath ($lines -join "`r`n")
     }
 }
 

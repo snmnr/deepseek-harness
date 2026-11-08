@@ -4,7 +4,7 @@ description: 删记忆：撕掉一条（先确认）。用法：/mem0-forget <�
 ---
 按顺序执行：
 
-1. 用 `mcp__mem0__search_memories` 搜索：$ARGUMENTS（top_k=10）
+1. 用 `mcp__mem0__search_memories` 搜索用户消息里 `/mem0-forget` 后面的关键词（top_k=10）
 2. 把候选列出来，每条给出 id 和一句话摘要，**等用户确认要删哪几条**
 3. 用户确认后，才对选中的 id 调用 `mcp__mem0__delete_memory`
 

@@ -2,10 +2,11 @@
 name: publish-project-docs
 description: 发布当前项目下的 md 到 AFFiNE（通用项目发布器）。用法：/publish-project-docs [--preview] [--all] ...
 ---
-运行通用 AFFiNE 文档发布器，扫描**当前项目目录**（当前工作目录）：
+运行通用 AFFiNE 文档发布器，扫描**当前项目目录**（当前工作目录）。
+参数 = 用户消息里 `/publish-project-docs` 之后的文字；没有参数就不加：
 
 ```powershell
-node "{{TOOL}}" . $ARGUMENTS
+node "{{TOOL}}" .
 ```
 
 常用参数：
