@@ -129,10 +129,13 @@ emit 事件，`taskkill /F` 或关网页都不会触发。产物为
 `~/.mem0-claude-dsh/exports/<项目slug>/<会话ID>.jsonl`，同时登记到
 `~/.affine-docs/distill/pending.json`（`source: "dsh"`）。
 
-checkpoint 产物写在**会话工作区**的 `notes/_state/last-checkpoint.{json,md}`
-（不可写回退 `~/.dsh/state/checkpoints/<slug>/`）。dsh 未选目录时工作区是
-`<文档>/deepseek-harness/default-workspace`，所以产物不在仓库根目录下——
-要核对时先看会话的 `cwd`。同一目录还有 UI 面板读取的 `notes/_state/mem0-status.json`。
+checkpoint 产物写在**项目根**（沿会话工作区向上找 `.git` 或 `CLAUDE.md`，与
+`context_guard.py` 一致，工作区是子目录时也能和 CC 侧对齐）的
+`notes/_state/last-checkpoint.{json,md}`，并另留一份
+`notes/YYYY/MM/YYYY-MM-DD-HHMM-checkpoint.md`（每个 dated 目录保留最近 30 份）。
+项目目录不可写时回退 `~/.dsh/state/checkpoints/<slug>/`。dsh 未选目录时工作区是
+`<文档>/deepseek-harness/default-workspace`，要核对时先看会话的 `cwd`。
+同一目录还有 UI 面板读取的 `notes/_state/mem0-status.json`。
 阈值环境变量 `CONTEXT_GUARD_WARN/URGENT/CRITICAL`（默认 0.6/0.75/0.9，相对上下文窗口）。
 
 ## 自动 Handoff / 会话续接（对齐套件 v1.7）

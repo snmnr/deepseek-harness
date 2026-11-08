@@ -14,6 +14,7 @@
  * @module checkpoint
  */
 
+import { existsSync } from 'node:fs'
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -273,11 +274,28 @@ function cwdSlug(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64) || 'default'
 }
 
+/**
+ * Walk up to the project root the way context_guard.py does: the first dir
+ * with `.git` or `CLAUDE.md` wins, so a session opened in a subdirectory still
+ * shares `notes/_state` with the Claude Code side of the same project.
+ */
+function projectRoot(cwd: string): string {
+  const base = resolve(cwd)
+  let dir = base
+  for (;;) {
+    if (existsSync(join(dir, '.git')) || existsSync(join(dir, 'CLAUDE.md'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return base
+    dir = parent
+  }
+}
+
 /** State-dir candidates, preferred first: project tree, then `~/.dsh`. */
 function stateDirCandidates(cwd: string): string[] {
+  const root = projectRoot(cwd)
   return [
-    resolve(cwd, 'notes', '_state'),
-    join(homedir(), '.dsh', 'state', 'checkpoints', cwdSlug(cwd)),
+    resolve(root, 'notes', '_state'),
+    join(homedir(), '.dsh', 'state', 'checkpoints', cwdSlug(root)),
   ]
 }
 
@@ -330,10 +348,12 @@ export function renderCheckpointMarkdown(
 }
 
 /**
- * Write the checkpoint files. Prefers `<cwd>/notes/_state/`, falls back to
- * `~/.dsh/state/checkpoints/<cwd-slug>/` when the project dir is not writable.
- * The JSON carries the kit's `users`/`assistants`/`tools` fields so a Claude
- * Code session in the same project can resume from a dsh checkpoint.
+ * Write the checkpoint files. Prefers `<project-root>/notes/_state/`, falls
+ * back to `~/.dsh/state/checkpoints/<root-slug>/` when the project dir is not
+ * writable. Also leaves a dated `notes/YYYY/MM/*-checkpoint.md` copy (newest
+ * 30 kept), the same note history context_guard.py produces. The JSON carries
+ * the kit's `users`/`assistants`/`tools` fields so a Claude Code session in the
+ * same project can resume from a dsh checkpoint.
  * @returns The markdown path, or `undefined` when neither location is writable.
  */
 export async function writeCheckpoint(
@@ -348,6 +368,7 @@ export async function writeCheckpoint(
     ? state.recentAssistantTexts
     : state.steps.map(s => s.assistant).filter((text): text is string => Boolean(text))
   const tools = state.steps.flatMap(s => s.tools)
+  const root = projectRoot(cwd)
   for (const dir of stateDirCandidates(cwd)) {
     try {
       await mkdir(dir, { recursive: true })
@@ -370,6 +391,19 @@ export async function writeCheckpoint(
       }
       await writeFile(join(dir, 'last-checkpoint.json'), JSON.stringify(payload, null, 2), 'utf8')
       await writeFile(mdPath, md, 'utf8')
+      // Dated copy for note retrieval, same as the kit. Best-effort: resume
+      // only depends on the rolling last-checkpoint above.
+      try {
+        const inProject = resolve(dir) === resolve(root, 'notes', '_state')
+        const datedDir = inProject
+          ? join(root, 'notes', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'))
+          : dir
+        await mkdir(datedDir, { recursive: true })
+        await writeFile(join(datedDir, `${fileStamp(now)}-checkpoint.md`), md, 'utf8')
+        await pruneDated(datedDir, '-checkpoint.md', 30)
+      } catch {
+        // Keep the rolling checkpoint even when the dated copy fails.
+      }
       return mdPath
     } catch {
       // try next candidate
@@ -416,6 +450,7 @@ export async function writeAutoHandoff(
   const tools = state.steps.flatMap(s => s.tools)
   const band = handoffBand(ratio)
   const pct = Math.round(ratio * 100)
+  const root = projectRoot(cwd)
   for (const stateDir of stateDirCandidates(cwd)) {
     try {
       await mkdir(stateDir, { recursive: true })
@@ -427,9 +462,9 @@ export async function writeAutoHandoff(
         // A missing or corrupt meta file means "no previous band yet".
         meta = {}
       }
-      const inProject = resolve(stateDir) === resolve(cwd, 'notes', '_state')
+      const inProject = resolve(stateDir) === resolve(root, 'notes', '_state')
       const datedDir = inProject
-        ? join(cwd, 'notes', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'))
+        ? join(root, 'notes', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'))
         : stateDir
       const target = meta.session === sessionId && meta.band === band && typeof meta.path === 'string'
         ? meta.path
