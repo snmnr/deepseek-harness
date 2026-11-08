@@ -106,10 +106,16 @@ export function guardLevel(tokens: number, window: number): 'warn' | 'urgent' | 
   return undefined
 }
 
+/** `YYYY-MM-DD HH:MM` in local time (checkpoint title format, same as CC side). */
+function localMinute(time: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${time.getFullYear()}-${pad(time.getMonth() + 1)}-${pad(time.getDate())} ${pad(time.getHours())}:${pad(time.getMinutes())}`
+}
+
 /** Render the checkpoint markdown (same shape as context_guard.py writes). */
 export function renderCheckpointMarkdown(cwd: string, state: { steps: StepRecord[]; totalTokens: number }, time: Date): string {
   const lines: string[] = [
-    '# 自动 Checkpoint（dsh mem0-dsh-bridge）',
+    `# 自动 Checkpoint ${localMinute(time)}`,
     '',
     `> 生成时间: ${time.toISOString()}　工作目录: ${cwd}　累计 tokens: ${state.totalTokens}`,
     '',
