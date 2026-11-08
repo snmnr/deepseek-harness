@@ -11,7 +11,8 @@
               mem0-mcp 源码   → ~/.mem0-claude-dsh/mcp/（uv sync 预建 venv）
               tools 副本      → ~/.mem0-claude-dsh/tools/
     2. 包装层：Assistant/hooks/mem0_hooks_dsh.py → ~/.mem0-claude-dsh/hooks/
-    3. 插件：  Assistant/plugin/ → ~/.mem0-claude-dsh/plugin/（--patch 引用其源码）
+    3. 插件：  Assistant/plugin/ → <profile>/plugins/mem0-dsh-bridge/（--patch 引用其源码；
+               必须位于 profile 树内，dsh 才会把 @deepseek-ai/* 导入路由给插件）
     4. Skills：Assistant/skills/*.md（替换占位符）→ ~/.dsh/skills/
     5. patch：  合并 mcp-manager servers.mem0 + mem0-dsh-bridge + hooks-claude-code
               到 ~/.dsh/profiles/<profile>/cordis.patch.yml（marker 幂等）
@@ -53,6 +54,9 @@ $AgentsHome   = if ($env:DSH_AGENTS_HOME) { $env:DSH_AGENTS_HOME } else { Join-P
 $SkillsDir    = Join-Path $DshHome 'skills'
 $ProfileDir   = Join-Path $DshHome "profiles\$Profile"
 $PatchPath    = Join-Path $ProfileDir 'cordis.patch.yml'
+# dsh 的 profile resolution 只对 profile 树内的文件路由 @deepseek-ai/* 导入；
+# 把插件放在 ~/.mem0-claude-dsh 下会在启动时报 "Cannot find module @deepseek-ai/..."。
+$PluginDir    = Join-Path $ProfileDir 'plugins\mem0-dsh-bridge'
 $CredPath     = Join-Path $DshHome '.credentials.yaml'
 $AgentsMd     = Join-Path $AgentsHome 'AGENTS.md'
 $DataDir      = Join-Path $DshHome 'mem0'
@@ -149,10 +153,16 @@ if (-not $DryRun) {
     Set-Content (Join-Path $InstallDir 'hooks\affine-docs-hook.ps1') $affHook -Encoding utf8
 }
 
-Write-Plan "5. 安装 bridge 插件 → $InstallDir\plugin"
+Write-Plan "5. 安装 bridge 插件 → $PluginDir"
 if (-not $DryRun) {
-    if (Test-Path (Join-Path $InstallDir 'plugin')) { Remove-Item -Recurse -Force (Join-Path $InstallDir 'plugin') }
-    Copy-Item (Join-Path $AssistDir 'plugin') (Join-Path $InstallDir 'plugin') -Recurse -Force
+    if (Test-Path $PluginDir) { Remove-Item -Recurse -Force $PluginDir }
+    New-Item -ItemType Directory -Force (Split-Path -Parent $PluginDir) | Out-Null
+    Copy-Item (Join-Path $AssistDir 'plugin') $PluginDir -Recurse -Force
+    # 旧版安装位置（profile 树外，导入无法解析）：升级时清掉
+    if (Test-Path (Join-Path $InstallDir 'plugin')) {
+        Remove-Item -Recurse -Force (Join-Path $InstallDir 'plugin')
+        Write-Host '   已移除旧版的 ~/.mem0-claude-dsh/plugin（迁移到 profile 树内）'
+    }
 }
 
 Write-Plan "5b. 安装 UI 插件（右栏 mem0 面板 + 会话头状态点） → $InstallDir\ui"
@@ -228,7 +238,7 @@ if ($ApiKey) {
 Write-Plan "9. 合并 patch → $PatchPath"
 $uvForward = if ($uv) { ($uv -replace '\\','/') } else { 'uv' }
 $installFwd = $InstallDir -replace '\\','/'
-$pluginEntry = (Join-Path $InstallDir 'plugin\src\index.ts') -replace '\\','/'
+$pluginEntry = (Join-Path $PluginDir 'src\index.ts') -replace '\\','/'
 $hooksJsonPath = (Join-Path $InstallDir 'hooks\hooks.json') -replace '\\','/'
 $dataFwd = $DataDir -replace '\\','/'
 $pyFwd = $py -replace '\\','/'

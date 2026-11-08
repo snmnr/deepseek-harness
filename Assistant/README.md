@@ -64,7 +64,10 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 `
 
 1. 套件运行时**只读复制**到 `~/.mem0-claude-dsh/`（original/ mcp/ tools/；mcp/ 预建 uv venv）
 2. 包装层 + hooks.json（占位符替换）→ `~/.mem0-claude-dsh/hooks/`
-3. bridge 插件源码 → `~/.mem0-claude-dsh/plugin/`
+3. bridge 插件源码 → `~/.dsh/profiles/<profile>/plugins/mem0-dsh-bridge/`
+   （**必须在 profile 树内**：dsh 的 profile resolution 只对 profile 目录下的文件
+   路由 `@deepseek-ai/*` 导入；装在 `~/.mem0-claude-dsh/` 下会启动即报
+   `Cannot find module '@deepseek-ai/schemastery'`，整个桥静默不激活）
 4. 13 个 skills（占位符替换）→ `~/.dsh/skills/`
 5. mem0 连接配置 → `~/.dsh/mem0/config.json`
 6. API key → `~/.dsh/.credentials.yaml` 的 `refs.MEM0_API_KEY`（不进 patch 明文）
@@ -159,6 +162,9 @@ UI 包为手写 closure-factory bundle（无需构建），patch 里以
 ## 已知限制
 
 - 插件以 `.ts` 源码挂载，要求从 monorepo 源码启动（`pnpm dsh web`）；打包安装需先 tsc 预编译。
+- 插件文件必须位于 `~/.dsh/profiles/<profile>/plugins/` 下。dsh 只对 profile 树内的
+  模块做 `@deepseek-ai/*` 导入路由；放到树外（如 `~/.mem0-claude-dsh/plugin`）时
+  插件会在启动阶段 `failed to import`，桥不激活且不采集任何事件。
 - skill 的 `$ARGUMENTS` 透传行为依赖 dsh skill-filesystem 实现，若不透传需调整措辞。
 - 状态栏/通知：dsh 无系统通知 API；P9 的 client 插件提供右栏面板与会话头状态指示，
   任务完成提醒由 dsh 自带 completion-reminder 承担。

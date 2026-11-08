@@ -24,6 +24,7 @@ $DshHome      = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $Home2 '.d
 $AgentsHome   = if ($env:DSH_AGENTS_HOME) { $env:DSH_AGENTS_HOME } else { Join-Path $Home2 '.agents' }
 $SkillsDir    = Join-Path $DshHome 'skills'
 $PatchPath    = Join-Path $DshHome "profiles\$Profile\cordis.patch.yml"
+$PluginDir    = Join-Path $DshHome "profiles\$Profile\plugins\mem0-dsh-bridge"
 $CredPath     = Join-Path $DshHome '.credentials.yaml'
 $AgentsMd     = Join-Path $AgentsHome 'AGENTS.md'
 $DataDir      = Join-Path $DshHome 'mem0'
@@ -96,8 +97,16 @@ if (Test-Path $CredPath) {
     }
 }
 
+# ---------- bridge 插件（profile 树内） ----------
+Write-Plan "5a. 删除 bridge 插件目录 $PluginDir"
+if (Test-Path $PluginDir) {
+    if (-not $DryRun) { Remove-Item -Recurse -Force $PluginDir -Confirm:$false }
+} else {
+    Write-Plan '   （不存在，跳过）'
+}
+
 # ---------- 运行时目录 ----------
-Write-Plan "5. 删除运行时目录 $InstallDir（含 plugin/ ui/ hooks/ tools/ original/ mcp/）"
+Write-Plan "5b. 删除运行时目录 $InstallDir（含 ui/ hooks/ tools/ original/ mcp/）"
 if (Test-Path $InstallDir) {
     if (-not $DryRun) { Remove-Item -Recurse -Force $InstallDir -Confirm:$false }
 } else {

@@ -7,6 +7,9 @@
 #   - 路径一律用正斜杠绝对路径（Windows 下 dsh/Git Bash 兼容）。
 #   - 正式安装走 install-dsh.ps1，patch 写入 ~/.dsh/profiles/<profile>/cordis.patch.yml，
 #     不依赖本文件；本文件仅用于开发验证。
+#   - 本文件能用是因为插件源码在 monorepo 内（@deepseek-ai/* 可从仓库 node_modules
+#     解析）。正式安装必须把插件复制到 ~/.dsh/profiles/<profile>/plugins/ 下，放到
+#     profile 树外会加载失败。
 - insert:
     - id: mem0-dsh-bridge
       name: 'D:/Working/AIAssistantDev/deepseek-harness/Assistant/plugin/src/index.ts'
