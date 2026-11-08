@@ -36,7 +36,7 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 import { fireHookCommand, captureHookStdout, runHookCommand, basePayload, type BridgeConfig } from './capture.ts'
-import { CheckpointState, guardLevel, writeCheckpoint } from './checkpoint.ts'
+import { CheckpointState, guardLevel, handoffThreshold, readResumeContext, writeAutoHandoff, writeCheckpoint } from './checkpoint.ts'
 import { ExportBuffer, writeExport } from './export.ts'
 import { writeStatusFile, type UiStatusExtra } from './status.ts'
 
@@ -92,6 +92,14 @@ interface SessionState {
    * the stop hook can read one event short of the threshold.
    */
   capture: Promise<unknown>
+  /** A fresh top-level session may resume from the previous checkpoint. */
+  resumeEligible: boolean
+  /** Set once the checkpoint/handoff files have been read (even if empty). */
+  resumeChecked: boolean
+  /** The `<上次会话自动续接>` block, when a previous checkpoint exists. */
+  resumeText: string | undefined
+  /** Set after the resume block was folded into a model step. */
+  resumeInjected: boolean
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -117,39 +125,61 @@ export function apply(ctx: Context, config: Config): void {
         exportBuffer: new ExportBuffer(cwd),
         cwd,
         capture: Promise.resolve(),
+        resumeEligible: false,
+        resumeChecked: false,
+        resumeText: undefined,
+        resumeInjected: false,
       }
       states.set(sid, st)
     }
     return st
   }
 
-  // --- SessionStart → agent/created (serial, awaited): rescue stale buffers ---
+  // --- SessionStart → agent/created (serial, awaited): rescue stale buffers + resume ---
   ctx.on('agent/created', ({ agent, source }) => {
     const st = stateFor(agent)
+    const header = agent.session.header
+    // A fresh top-level session resumes what the previous one left behind.
+    // `resume` means the persisted session was loaded with its own history;
+    // `compact` continues the same conversation; subagents inherit the parent.
+    st.resumeEligible = (source === 'startup' || source === 'clear') && header.origin !== 'subagent'
     const payload = {
-      ...basePayload(String(agent.session.header.id), st.cwd, 'SessionStart'),
+      ...basePayload(String(header.id), st.cwd, 'SessionStart'),
       // CC source vocabulary: startup | resume | clear | compact. dsh's
       // compaction-recovery path maps to 'compact' → the wrapper flushes.
-      source: source === 'compaction' ? 'compact' : source === 'resume' ? 'resume' : 'startup',
+      source: source === 'compact' ? 'compact' : source === 'resume' ? 'resume' : 'startup',
     }
     fireHookCommand(resolved, 'session-start', payload, log)
     // Seed the UI status file so the right-panel tab has data immediately.
-    void writeStatusFile(st.cwd, String(agent.session.header.id), resolved, log)
+    void writeStatusFile(st.cwd, String(header.id), resolved, log)
   })
 
   // --- UserPromptSubmit → agent/pre-step: capture prompt + recall on first prompt ---
-  ctx.on('agent/pre-step', async ({ agent, messages, turn, signal }, next) => {
+  ctx.on('agent/pre-step', async ({ agent, messages, turn }, next) => {
     const st = stateFor(agent)
     const sid = String(agent.session.header.id)
     const text = blocksToText(messages.flatMap(m => m.content))
     st.checkpoint.beginTurn(turn, text || undefined)
     st.exportBuffer.addUser(text, Date.now())
+    if (st.resumeEligible && !st.resumeChecked && !st.resumeInjected) {
+      st.resumeText = await readResumeContext(st.cwd, sid)
+      st.resumeChecked = true
+    }
     const payload = { ...basePayload(sid, st.cwd, 'UserPromptSubmit'), prompt: text }
     const recalled = await captureHookStdout(resolved, 'user-prompt', payload, log)
     const downstream = await next()
-    if (!recalled || downstream.kind !== 'enter') return downstream
+    if (downstream.kind !== 'enter') return downstream
+    // Only the first model step carries the resume block; later turns would
+    // otherwise re-inject it every time the recall hook returns text.
+    const resume = st.resumeInjected ? undefined : st.resumeText
+    const parts = [resume, recalled].filter((part): part is string => Boolean(part))
+    if (st.resumeEligible) {
+      st.resumeInjected = true
+      st.resumeText = undefined
+    }
+    if (parts.length === 0) return downstream
     const context = createUserMessage({
-      content: [{ type: 'text', text: recalled } satisfies ContentBlock] as ContentBlock[],
+      content: [{ type: 'text', text: parts.join('\n\n') } satisfies ContentBlock] as ContentBlock[],
       source: CONTEXT_SOURCE,
     })
     return { ...downstream, messages: [...downstream.messages, context] }
@@ -238,6 +268,11 @@ export function apply(ctx: Context, config: Config): void {
         }))
       }
       await writeCheckpoint(st.cwd ?? process.cwd(), sid, st.checkpoint.snapshot())
+      // Deterministic handoff: the model cannot be relied on once the context
+      // is near full, so the bridge writes the same 80/90/97% bands itself.
+      if (agent.session.header.origin !== 'subagent' && st.cwd && window > 0) {
+        void writeAutoHandoff(st.cwd, sid, st.checkpoint.snapshot(), contextTokens / window)
+      }
     }
     // Refresh the UI status file at every turn boundary (buffer depth, pause
     // state, guard level). Session-end erases it below.
@@ -253,6 +288,15 @@ export function apply(ctx: Context, config: Config): void {
     const sid = String(agent.session.header.id)
     const st = states.get(sid)
     await st?.capture
+    // Last chance to land a handoff for a high-context session (the turn-stop
+    // write is throttled and may not have run for the final turn).
+    if (config.checkpoints !== false && st?.cwd && agent.session.header.origin !== 'subagent') {
+      const window = contextWindowOf(agent)
+      const ratio = window > 0 ? contextTokensOf(ctx, agent) / window : 0
+      if (ratio >= handoffThreshold()) {
+        await writeAutoHandoff(st.cwd, sid, st.checkpoint.snapshot(), ratio)
+      }
+    }
     fireHookCommand(resolved, 'session-end', basePayload(sid, st?.cwd, 'SessionEnd'), log)
     // Mark the UI status file ended (the panel shows a tombstone until the
     // workspace file channel reports the change).

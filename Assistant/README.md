@@ -29,7 +29,8 @@ Assistant/
 ├─ plugin/
 │  ├─ src/index.ts                       # 桥入口：dsh 事件 → Python 子命令翻译 + context 注入
 │  ├─ src/capture.ts                     # spawn python 执行 mem0_hooks 子命令（永不抛错）
-│  ├─ src/checkpoint.ts                  # context_guard 等价物（进程内环形缓冲 + 真实 usage token）
+│  ├─ src/checkpoint.ts                  # context_guard 等价物（环形缓冲 + 真实 usage token +
+│  │                                     #   自动 handoff + 启动续接，状态格式与套件 v1.7 互通）
 │  ├─ src/export.ts                      # agent/disposed 时导出 CC 兼容 JSONL + distill pending
 │  └─ cordis.yml                         # 源码启动 --patch 挂载样例
 ├─ hooks/
@@ -98,12 +99,12 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\uninstall-dsh.ps1 -PurgeDat
 
 | dsh 事件 | mem0_hooks 子命令 | 对应 Claude Code hook |
 |---|---|---|
-| `agent/created`（source 含 compaction → flush） | session-start / flush | SessionStart / PreCompact |
+| `agent/created`（startup/clear → 续接注入；compact → flush） | session-start / resume / flush | SessionStart / PreCompact |
 | `agent/pre-step`（用户文本） | user-prompt + 召回注入 | UserPromptSubmit |
 | `tools/result`（isError 分支） | post-tool / post-tool-failure | PostToolUse + **PostToolUseFailure**（桥不支持，原生补齐） |
 | `session/event: assistant/message` | assistant（事件尾去重） | Stop 的 transcript 抓取替代 |
 | `session/event: compaction/start` | flush | PreCompact |
-| `agent/turn-stopping` | checkpoint 写出 + 满阈值 flush-detached | Stop flush 触发 |
+| `agent/turn-stopping` | checkpoint + 自动 handoff（≥阈值）+ 满阈值 flush-detached | Stop |
 | `agent/disposed` | session-end + 蒸馏 JSONL 导出 | SessionEnd |
 | `subagent/start / end` | subagent-start / subagent-stop | SubagentStart / Stop |
 
@@ -133,6 +134,23 @@ checkpoint 产物写在**会话工作区**的 `notes/_state/last-checkpoint.{jso
 `<文档>/deepseek-harness/default-workspace`，所以产物不在仓库根目录下——
 要核对时先看会话的 `cwd`。同一目录还有 UI 面板读取的 `notes/_state/mem0-status.json`。
 阈值环境变量 `CONTEXT_GUARD_WARN/URGENT/CRITICAL`（默认 0.6/0.75/0.9，相对上下文窗口）。
+
+## 自动 Handoff / 会话续接（对齐套件 v1.7）
+
+dsh 侧不调用 `context_guard.py`（它依赖 CC 的 transcript JSONL），而是在 bridge 里原生实现同一套契约：
+
+- **自动 handoff**：`agent/turn-stopping` 时按 `contextTokens / contextWindow` 计算占用，达到
+  `CONTEXT_GUARD_HANDOFF`（默认 `0.8`）就由插件写
+  `notes/YYYY/MM/YYYY-MM-DD-HHMM-auto-handoff.md` + `notes/_state/last-handoff.md` +
+  `notes/_state/auto-handoff.json`。80/90/97% 三档，同会话同档位原地刷新，升档才新建文件。
+  `agent/disposed` 再兜底一次（最后一轮可能被 15s 写节流跳过）。全程不经过模型，上下文打满也能落盘。
+- **启动续接**：`agent/created` 记录会话来源；仅 `startup`/`clear` 的顶层会话（非 subagent）
+  在首次 `agent/pre-step` 注入 `<上次会话自动续接>`：上次用户消息、最近操作、自动 handoff 的
+  「下一步」和 checkpoint 路径。与 mem0 召回块合并成一条上下文消息，注入后不再重复。
+- **状态互通**：`last-checkpoint.json` 同时写 dsh 原生字段（`steps`/`totalTokens`）和套件的
+  `users`/`assistants`/`tools`/`session_id`/`md_path`；同一项目里 CC 与 dsh 可以互相从对方
+  留下的 checkpoint/handoff 续接。
+- 阈值可用 `CONTEXT_GUARD_HANDOFF=0.7` 提前触发、`1.0` 基本关闭。
 
 ## 状态面板 / 通知（P9 UI 插件）
 
