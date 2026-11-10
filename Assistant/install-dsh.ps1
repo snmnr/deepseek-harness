@@ -393,6 +393,13 @@ $hooksJsonPath = (Join-Path $InstallDir 'hooks\hooks.json') -replace '\\','/'
 $dataFwd = $DataDir -replace '\\','/'
 $pyFwd = $py -replace '\\','/'
 
+# --no-sync 只有在安装时真的建好了 venv 才能用；-SkipUvSync（或找不到 uv）时
+# 目标 mcp/ 没有 .venv，带着它会让 mem0 MCP 启动即失败，所以改为首次启动自动同步。
+$uvRunArgs = if ($uv -and -not $SkipUvSync) {
+    "['run', '--no-sync', '--directory', '$installFwd/mcp', 'mem0-mcp']"
+} else {
+    "['run', '--directory', '$installFwd/mcp', 'mem0-mcp']"
+}
 $patchBlock = @"
 $PATCH_MARKER_BEGIN
 # ---- mcp-manager：mem0 server（注意：patch 会替换整个 servers map，
@@ -403,7 +410,7 @@ $PATCH_MARKER_BEGIN
       mem0:
         transport: stdio
         command: '$uvForward'
-        args: ['run', '--no-sync', '--directory', '$installFwd/mcp', 'mem0-mcp']
+        args: $uvRunArgs
         env:
           MEM0_API_URL: '$ApiUrl'
           MEM0_API_KEY: '`${credential:MEM0_API_KEY}'

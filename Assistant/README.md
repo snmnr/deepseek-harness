@@ -69,8 +69,10 @@ Assistant/
 ```
 
 > 安装步骤 2 会复制 mem0-mcp 并执行 `uv sync`，首次可能 1~3 分钟且没有进度输出。
-> 卡在 `开始 uv sync` 时是网络/包解析慢，可用 `-SkipUvSync` 跳过（首次启动 dsh
-> 时会自动同步）；已安装 Claude kit 的 `.venv` 会被跳过，不会整目录复制。
+> 卡在 `开始 uv sync` 时是网络/包解析慢，可用 `-SkipUvSync` 跳过；此时安装器会
+> 去掉 patch 里的 `--no-sync`，首次启动 dsh 时由 `uv run` 自动同步（也可提前手动
+> `cd ~/.mem0-claude-dsh/mcp && uv sync`）。已安装 Claude kit 的 `.venv` 会被跳过，
+> 不会整目录复制。
 > 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
 
 > **ApiUrl 必须填真实地址。** 它会以 `MEM0_API_URL` 环境变量注入 hook 子进程，
