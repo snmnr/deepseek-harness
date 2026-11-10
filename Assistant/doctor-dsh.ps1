@@ -65,7 +65,16 @@ if (Test-Path $patch) {
     Fail "profile patch 缺失：$patch"
 }
 $pluginEntry = Join-Path $DshHome 'profiles\web\plugins\mem0-dsh-bridge\src\index.ts'
-if (Test-Path $pluginEntry) { Ok "bridge 插件：$pluginEntry" } else { Fail "bridge 插件未安装：$pluginEntry" }
+if (Test-Path $pluginEntry) {
+    Ok "bridge 插件：$pluginEntry"
+    if (Select-String -Path $pluginEntry -Pattern 'writeBridgeHeartbeat' -SimpleMatch -Quiet) {
+        Ok '插件副本包含心跳代码（版本较新）'
+    } else {
+        Warn '插件副本没有心跳代码：只 git pull 不会更新 profile 副本，需重跑 install-dsh.cmd 后再重启'
+    }
+} else {
+    Fail "bridge 插件未安装：$pluginEntry"
+}
 
 Section 'bridge 激活心跳'
 $heartbeat = Join-Path $DshHome 'mem0\bridge-alive.json'
@@ -120,8 +129,13 @@ if (($statusCandidates | Where-Object { Test-Path $_ }).Count -eq 0 -and $docSta
 Section '3080 端口'
 if ($listener) {
     $proc = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+    $procInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
     if ($proc) {
         Ok "监听 3080：PID $($proc.Id) $($proc.ProcessName)，启动于 $($proc.StartTime)"
+        if ($procInfo -and $procInfo.CommandLine) { Write-Host "        $($procInfo.CommandLine)" }
+        if ((Test-Path $pluginEntry) -and $proc.StartTime -and ((Get-Item $pluginEntry).LastWriteTime -gt $proc.StartTime)) {
+            Warn 'bridge 插件在进程启动之后被更新过：当前进程仍用旧代码，需要重启 dsh'
+        }
     } else {
         Ok "监听 3080：PID $($listener.OwningProcess)（进程信息不可读）"
     }
@@ -150,6 +164,21 @@ if ($startup) {
 } else {
     if ($dshRunning) { Warn '没有 startup-*.log' } else { Write-Host '  INFO  dsh 未运行，还没有新的启动日志' }
 }
+
+Section '所有近期日志里的 bridge 记录'
+$recentLogs = Get-ChildItem (Join-Path $DshHome 'logs') -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 6
+$foundBridgeLog = $false
+foreach ($logFile in $recentLogs) {
+    $logHits = Select-String -Path $logFile.FullName -Pattern 'mem0-dsh-bridge|failed to import' -ErrorAction SilentlyContinue |
+        Select-Object -Last 4
+    if ($logHits) {
+        $foundBridgeLog = $true
+        Write-Host "  $($logFile.Name)（$($logFile.LastWriteTime)）"
+        $logHits | ForEach-Object { Write-Host ("    " + $_.Line.Trim()) }
+    }
+}
+if (-not $foundBridgeLog) { Write-Host '  INFO  近期日志里没有 mem0-dsh-bridge / failed to import 记录' }
 
 if ($Deep -and (Test-Path $hooks)) {
     Section 'mem0 doctor（会访问服务端）'
