@@ -17,7 +17,10 @@
   不自动打开浏览器。
 
 .PARAMETER Install
-  node_modules 缺失时自动执行 pnpm install（首次较慢）。
+  强制重新执行 pnpm install（修复依赖）。默认只在 node_modules 缺失时安装。
+
+.PARAMETER NoBootstrap
+  不自动补齐环境：缺 pnpm、缺 node_modules 时直接报错退出。
 
 .PARAMETER Check
   只做环境检查，不启动服务。
@@ -32,6 +35,7 @@ param(
     [int]$Port = 3080,
     [switch]$NoOpen,
     [switch]$Install,
+    [switch]$NoBootstrap,
     [switch]$Check
 )
 
@@ -41,16 +45,44 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 function Write-Step { param([string]$Message) Write-Host "[start-dsh] $Message" -ForegroundColor Cyan }
 function Stop-WithError { param([string]$Message) Write-Host "[start-dsh] $Message" -ForegroundColor Red; exit 1 }
 
+# 双击启动时 Explorer 可能还在用旧的 PATH（刚装完 Node/npm 没重启资源管理器），
+# 所以不能只信 Get-Command：同时查常见安装位置，并把所在目录补进本进程 PATH。
+function Find-Executable {
+    param([string]$Name, [string[]]$Candidates)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and $cmd.Source) { return $cmd.Source }
+    foreach ($candidate in $Candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return $null
+}
+
+function Add-ToProcessPath {
+    param([string]$Directory)
+    if (-not $Directory) { return }
+    if (($env:Path -split ';') -notcontains $Directory) {
+        $env:Path = "$Directory;$env:Path"
+    }
+}
+
 # ---------- 1. 仓库结构 ----------
 $cliEntry = Join-Path $RepoRoot 'apps\cli\src\bin.ts'
 if (-not (Test-Path $cliEntry)) {
     Stop-WithError "这不是 deepseek-harness 仓库（找不到 apps\cli\src\bin.ts）：$RepoRoot"
 }
 
-# ---------- 2. Node >= 24.9 ----------
-$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-if (-not $nodeCmd) { Stop-WithError '未找到 node。请安装 Node.js 24.9+ 后重试。' }
-$nodeVersion = (& node -p "process.versions.node" 2>$null | Select-Object -First 1)
+# ---------- 2. Node 24.9+ ----------
+$nodePath = Find-Executable 'node' @(
+    'C:\Program Files\nodejs\node.exe',
+    (Join-Path $env:LOCALAPPDATA 'Programs\nodejs\node.exe'),
+    (Join-Path $env:ProgramFiles 'nodejs\node.exe')
+)
+if (-not $nodePath) {
+    Stop-WithError ('未找到 Node.js。请安装 Node.js 24.9+：' +
+        'winget install OpenJS.NodeJS.LTS（装完重开本窗口）')
+}
+Add-ToProcessPath (Split-Path -Parent $nodePath)
+$nodeVersion = (& $nodePath -p "process.versions.node" 2>$null | Select-Object -First 1)
 $parts = "$nodeVersion".Split('.')
 $nodeOk = $false
 if ($parts.Count -ge 2) {
@@ -61,24 +93,63 @@ if ($parts.Count -ge 2) {
 if (-not $nodeOk) { Stop-WithError "Node $nodeVersion 太旧，需要 >= 24.9.0。" }
 Write-Step "Node $nodeVersion"
 
-# ---------- 3. pnpm ----------
-$pnpmCmd = Get-Command pnpm -ErrorAction SilentlyContinue
-if (-not $pnpmCmd) {
-    Stop-WithError '未找到 pnpm。请先安装 pnpm 11.x（corepack enable，或 npm i -g pnpm）。'
+# ---------- 3. pnpm（缺失时自动安装） ----------
+function Find-Pnpm {
+    $found = Find-Executable 'pnpm' @(
+        (Join-Path $env:APPDATA 'npm\pnpm.cmd'),
+        (Join-Path $env:LOCALAPPDATA 'pnpm\pnpm.exe'),
+        'C:\Program Files\nodejs\pnpm.cmd'
+    )
+    # cmd.exe 启动需要 .cmd/.exe；Get-Command 可能先找到 pnpm.ps1
+    if ($found -and $found -match '\.ps1$') {
+        $cmdVariant = [IO.Path]::ChangeExtension($found, '.cmd')
+        if (Test-Path -LiteralPath $cmdVariant) { return $cmdVariant }
+    }
+    return $found
 }
 
-# ---------- 4. 依赖 ----------
-if (-not (Test-Path (Join-Path $RepoRoot 'node_modules'))) {
-    if ($Install) {
-        Write-Step '缺少 node_modules，执行 pnpm install（首次较慢）...'
-        Push-Location $RepoRoot
-        try {
-            & pnpm install
-            if ($LASTEXITCODE -ne 0) { Stop-WithError "pnpm install 失败（exit $LASTEXITCODE）。" }
-        } finally { Pop-Location }
-    } else {
-        Stop-WithError '缺少 node_modules。先运行 pnpm install，或加 -Install 让本脚本自动安装。'
+$pnpmPath = Find-Pnpm
+if (-not $pnpmPath) {
+    if ($NoBootstrap) {
+        Stop-WithError '未找到 pnpm（已指定 -NoBootstrap）。请先 npm i -g pnpm@11。'
     }
+    $npmPath = Find-Executable 'npm' @(
+        'C:\Program Files\nodejs\npm.cmd',
+        (Join-Path $env:ProgramFiles 'nodejs\npm.cmd')
+    )
+    if (-not $npmPath) {
+        Stop-WithError '未找到 pnpm，也找不到 npm，无法自动安装。请重装 Node.js 24.9+。'
+    }
+    Write-Step '未找到 pnpm，自动安装 pnpm@11.28.5（npm install -g，可能需要几十秒）...'
+    & $npmPath install -g 'pnpm@11.28.5'
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "pnpm 自动安装失败（exit $LASTEXITCODE）。请手动运行：npm i -g pnpm@11"
+    }
+    $pnpmPath = Find-Pnpm
+    if (-not $pnpmPath) {
+        Stop-WithError 'pnpm 安装后仍未找到。请重开本窗口，或确认 %APPDATA%\npm 在 PATH 中。'
+    }
+}
+Add-ToProcessPath (Split-Path -Parent $pnpmPath)
+$pnpmVersion = (& $pnpmPath --version 2>$null | Select-Object -First 1)
+Write-Step "pnpm $pnpmVersion"
+
+# ---------- 4. 依赖（缺失时自动安装） ----------
+$nodeModules = Join-Path $RepoRoot 'node_modules'
+$needInstall = $Install -or (-not (Test-Path $nodeModules))
+if ($needInstall) {
+    if ($NoBootstrap -and -not (Test-Path $nodeModules)) {
+        Stop-WithError '缺少 node_modules（已指定 -NoBootstrap）。请先运行 pnpm install。'
+    }
+    Write-Step '执行 pnpm install（首次较慢，可能几分钟）...'
+    Push-Location $RepoRoot
+    try {
+        & $pnpmPath install
+        $installCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($installCode -ne 0) { Stop-WithError "pnpm install 失败（exit $installCode）。" }
 }
 
 # ---------- 5. 端口 ----------
@@ -117,7 +188,7 @@ $previousEap = $ErrorActionPreference
 try {
     # 经 cmd 合并 stderr 后再交给 Tee：PS 5.1 若直接 `2>&1` 原生命令，
     # 会把 pnpm 的命令回显包装成红色 NativeCommandError，日志也会变脏。
-    $commandLine = "pnpm start:web --port $Port"
+    $commandLine = '"' + $pnpmPath + '" start:web --port ' + $Port
     if ($NoOpen) { $commandLine += ' --no-open' }
     $commandLine += ' 2>&1'
     $ErrorActionPreference = 'Continue'
