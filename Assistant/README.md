@@ -90,6 +90,25 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 `
 > 重装时整体替换。你自己的 profile 配置（模型、provider、主题等）必须写在
 > marker 块**外**，否则会被静默覆盖。
 
+## 一键启动
+
+`start-dsh.ps1` 从仓库源码启动 Web UI（mem0-dsh-bridge 是 `.ts` 插件，必须源码启动，
+不能用 `npx` 的打包版）：
+
+```powershell
+.\Assistant\start-dsh.ps1                 # 默认 http://127.0.0.1:3080，自动开浏览器
+.\Assistant\start-dsh.ps1 -Check          # 只检查环境，不启动
+.\Assistant\start-dsh.ps1 -Port 3081 -NoOpen
+.\Assistant\start-dsh.ps1 -Install        # 缺 node_modules 时自动 pnpm install
+```
+
+也可以直接双击 `Assistant\start-dsh.cmd`（等价于无参数运行 `start-dsh.ps1`）。
+
+- 前置：Node >= 24.9、pnpm 11.x、仓库已 `pnpm install`；
+- 端口被占用会直接报出占用 PID，换 `-Port` 即可；
+- 日志写到 `~/.mem0-claude-dsh/logs/dsh-web-<时间>.log`；
+- mem0 桥未安装时只告警（网页仍可启动）：先跑 `install-dsh.ps1`。
+
 ## 卸载
 
 ```powershell
