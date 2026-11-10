@@ -58,6 +58,12 @@ const WRITE_THROTTLE_MS = 15_000
 const HANDOFF_BANDS = [0.8, 0.9, 0.97] as const
 /** The resume block must stay small enough to sit in a fresh prompt. */
 const RESUME_MAX_CHARS = 2200
+/**
+ * Same-session, same-band warning throttle (context_guard.py v1.8.0). A tool
+ * loop fires the check on every tool result; without this the same sentence
+ * would be steered into the model dozens of times per turn.
+ */
+const WARN_THROTTLE_MS = 15 * 60_000
 
 /** In-memory per-session capture state. */
 export class CheckpointState {
@@ -110,10 +116,10 @@ export class CheckpointState {
     return this.recentAssistants.slice(-limit)
   }
 
-  /** Whether a checkpoint write is due (throttled). */
-  shouldWrite(): boolean {
+  /** Whether a checkpoint write is due (throttled; `force` bypasses). */
+  shouldWrite(force = false): boolean {
     const now = Date.now()
-    if (now - this.lastWriteAt < WRITE_THROTTLE_MS) return false
+    if (!force && now - this.lastWriteAt < WRITE_THROTTLE_MS) return false
     this.lastWriteAt = now
     return this.steps.length > 0
   }
@@ -133,18 +139,73 @@ function thresholds(): { warn: number; urgent: number; critical: number } {
     const v = Number.parseFloat(process.env[name] ?? '')
     return Number.isFinite(v) && v > 0 && v < 1 ? v : def
   }
-  return { warn: num('CONTEXT_GUARD_WARN', 0.6), urgent: num('CONTEXT_GUARD_URGENT', 0.75), critical: num('CONTEXT_GUARD_CRITICAL', 0.9) }
+  // The kit's default first band is 55% since v1.8.0 (a late 60% warning often
+  // arrives after the model is already unable to hand off cleanly).
+  return { warn: num('CONTEXT_GUARD_WARN', 0.55), urgent: num('CONTEXT_GUARD_URGENT', 0.75), critical: num('CONTEXT_GUARD_CRITICAL', 0.9) }
+}
+
+/**
+ * Context window the guard should use: the route's real window, capped by
+ * `CONTEXT_GUARD_TOKENS` when set (the kit's manual override, useful when the
+ * provider rejects before the declared window — `Prompt is too long`).
+ * @param routeWindow Window reported by the resolved model route (0 → unknown).
+ * @returns The effective window in tokens.
+ */
+export function contextLimit(routeWindow: number): number {
+  const cap = Number.parseFloat(process.env.CONTEXT_GUARD_TOKENS ?? '')
+  if (!Number.isFinite(cap) || cap <= 0) return routeWindow
+  return routeWindow > 0 ? Math.min(routeWindow, cap) : cap
+}
+
+/** Numeric warning band (55/75/90), the values context_guard.py emits. */
+export function guardBand(tokens: number, window: number): number | undefined {
+  if (window <= 0) return undefined
+  const r = tokens / window
+  const t = thresholds()
+  if (r >= t.critical) return 90
+  if (r >= t.urgent) return 75
+  if (r >= t.warn) return 55
+  return undefined
 }
 
 /** Guard level for the current pressure, or undefined below warn. */
 export function guardLevel(tokens: number, window: number): 'warn' | 'urgent' | 'critical' | undefined {
-  if (window <= 0) return undefined
-  const r = tokens / window
-  const t = thresholds()
-  if (r >= t.critical) return 'critical'
-  if (r >= t.urgent) return 'urgent'
-  if (r >= t.warn) return 'warn'
-  return undefined
+  const band = guardBand(tokens, window)
+  return band === 90 ? 'critical' : band === 75 ? 'urgent' : band === 55 ? 'warn' : undefined
+}
+
+/**
+ * Same-session/same-band warning throttle, mirroring context_guard.py's
+ * `context-guard-warn.json`. Kept in memory because one dsh process owns the
+ * session; a restart simply re-arms the warning.
+ */
+export class WarnThrottle {
+  private level = 0
+  private at = 0
+
+  /**
+   * @param level Highest active band (`max(guard 55/75/90, handoff 80/90/97)`),
+   *   or undefined when the context is below the warn threshold.
+   * @returns The level to emit now, or undefined when throttled.
+   */
+  check(level: number | undefined): number | undefined {
+    if (!level) {
+      this.reset()
+      return undefined
+    }
+    const now = Date.now()
+    // A raised band must be visible immediately; only a repeated band waits.
+    if (level <= this.level && now - this.at < WARN_THROTTLE_MS) return undefined
+    this.level = level
+    this.at = now
+    return level
+  }
+
+  /** Forget the last warning (context dropped or history was compacted). */
+  reset(): void {
+    this.level = 0
+    this.at = 0
+  }
 }
 
 /**
@@ -162,6 +223,14 @@ function handoffBand(ratio: number): number {
   let band = 0
   for (const b of HANDOFF_BANDS) if (ratio >= b) band = Math.round(b * 100)
   return band
+}
+
+/**
+ * Handoff band as a percentage (0/80/90/97), used to escalate the warning
+ * throttle even when the guard band itself has not changed.
+ */
+export function handoffBandPercent(ratio: number): number {
+  return handoffBand(ratio)
 }
 
 /** `YYYY-MM-DD HH:MM` in local time (checkpoint title format, same as CC side). */

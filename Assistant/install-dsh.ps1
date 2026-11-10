@@ -45,6 +45,10 @@ param(
     [string]$ApiUrl,
     [string]$ApiKey,
     [string]$UserId,
+    # 可选：开发机状态上报（mem0_hooks 1.7.22 起）。不传则保留 config.json 里已有的值。
+    [string]$ReportUrl,
+    [string]$ReportToken,
+    [string]$MachineId,
     [string]$InstallDir = (Join-Path $env:USERPROFILE '.mem0-claude-dsh'),
     [switch]$DryRun
 )
@@ -63,6 +67,7 @@ $PluginDir    = Join-Path $ProfileDir 'plugins\mem0-dsh-bridge'
 $CredPath     = Join-Path $DshHome '.credentials.yaml'
 $AgentsMd     = Join-Path $AgentsHome 'AGENTS.md'
 $DataDir      = Join-Path $DshHome 'mem0'
+$KitVersion   = if (Test-Path (Join-Path $KitDir 'VERSION')) { (Get-Content (Join-Path $KitDir 'VERSION') -Raw -Encoding UTF8).Trim() } else { '' }
 
 $PATCH_MARKER_BEGIN = '# mem0-claude-kit:dsh begin'
 $PATCH_MARKER_END   = '# mem0-claude-kit:dsh end'
@@ -81,6 +86,7 @@ function Write-Utf8NoBom { param([string]$Path, [string]$Text)
 
 # ---------- 前置检查 ----------
 Write-Host '== mem0-claude-kit → dsh 安装 ==' -ForegroundColor Green
+if ($KitVersion) { Write-Host "   套件版本: $KitVersion" }
 if ($DryRun) { Write-Host '（DryRun 模式：不写任何文件）' -ForegroundColor Yellow }
 
 foreach ($req in @(
@@ -139,10 +145,14 @@ if ($ApiUrl -match 'example\.(com|org)') {
 }
 
 # ---------- 1. 运行时复制（套件只读） ----------
-Write-Plan "1. 复制套件 mem0_hooks.py → $InstallDir\original"
+Write-Plan "1. 复制套件 mem0_hooks.py + VERSION → $InstallDir\original"
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force (Join-Path $InstallDir 'original') | Out-Null
     Copy-Item (Join-Path $KitDir 'payload\mem0_hooks.py') (Join-Path $InstallDir 'original\mem0_hooks.py') -Force
+    # doctor 的「版本」检查与「已安装的 mem0_hooks.py 来自 kit x.y.z」需要它
+    if (Test-Path (Join-Path $KitDir 'VERSION')) {
+        Copy-Item (Join-Path $KitDir 'VERSION') (Join-Path $InstallDir 'original\VERSION') -Force
+    }
 }
 
 Write-Plan "2. 复制 mem0-mcp 源码 → $InstallDir\mcp"
@@ -217,8 +227,23 @@ if (-not $DryRun) {
 Write-Plan "7. 写 mem0 连接配置 → $DataDir\config.json"
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force $DataDir | Out-Null
-    $cfgJson = @{ api_url = $ApiUrl; api_key = $ApiKey; user_id = $UserId } | ConvertTo-Json
-    Write-Utf8NoBom (Join-Path $DataDir 'config.json') $cfgJson
+    $cfgPath = Join-Path $DataDir 'config.json'
+    # 合并而不是覆盖：report_url/report_token/machine_id 等可选键由用户或
+    # 本安装器的 -Report* 参数维护，重装不能把它们清掉。
+    $cfg = [ordered]@{}
+    if (Test-Path $cfgPath) {
+        try {
+            $old = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($p in $old.PSObject.Properties) { $cfg[$p.Name] = $p.Value }
+        } catch { Write-Warning "现有 config.json 解析失败，将重写：$($_.Exception.Message)" }
+    }
+    if ($ApiUrl)      { $cfg['api_url']      = $ApiUrl }
+    if ($ApiKey)      { $cfg['api_key']      = $ApiKey }
+    if ($UserId)      { $cfg['user_id']      = $UserId }
+    if ($ReportUrl)   { $cfg['report_url']   = $ReportUrl }
+    if ($ReportToken) { $cfg['report_token'] = $ReportToken }
+    if ($MachineId)   { $cfg['machine_id']   = $MachineId }
+    Write-Utf8NoBom $cfgPath ($cfg | ConvertTo-Json)
 }
 
 # ---------- 5. 凭证（.credentials.yaml refs 段） ----------

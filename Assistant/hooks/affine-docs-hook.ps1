@@ -58,7 +58,9 @@ function Main {
     # 后台发布，不阻塞工具结果；输出进 stderr 由桥记录
     $log = Join-Path $env:USERPROFILE '.mem0-claude-dsh\affine-hook.log'
     try {
-        $out = & $node $tool $projectRoot --files $filePath 2>&1
+        # 与套件 project-docs-hook.ps1 一致：发布整个项目（发布器按 hash 跳过未变文档），
+        # 没有单文件参数；把项目根作为位置参数传给它。
+        $out = & $node $tool $projectRoot 2>&1
         Add-Content -Path $log -Value ("[{0}] {1}: {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $filePath, ($out -join ' ')) -Encoding UTF8
         [Console]::Error.WriteLine("affine-docs-hook: 已发布 $filePath")
     } catch {

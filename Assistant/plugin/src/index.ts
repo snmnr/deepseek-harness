@@ -36,7 +36,18 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 import { fireHookCommand, captureHookStdout, runHookCommand, basePayload, type BridgeConfig } from './capture.ts'
-import { CheckpointState, guardLevel, handoffThreshold, readResumeContext, writeAutoHandoff, writeCheckpoint } from './checkpoint.ts'
+import {
+  CheckpointState,
+  WarnThrottle,
+  contextLimit,
+  guardBand,
+  guardLevel,
+  handoffBandPercent,
+  handoffThreshold,
+  readResumeContext,
+  writeAutoHandoff,
+  writeCheckpoint,
+} from './checkpoint.ts'
 import { ExportBuffer, writeExport } from './export.ts'
 import { writeStatusFile, type UiStatusExtra } from './status.ts'
 
@@ -84,6 +95,8 @@ const CONTEXT_SOURCE = { kind: 'mem0-dsh-bridge' } as const
 interface SessionState {
   checkpoint: CheckpointState
   exportBuffer: ExportBuffer
+  /** Same-session/same-band warning throttle (context_guard.py v1.8.0). */
+  warn: WarnThrottle
   /** Set after the first recall flag is written for this session id. */
   cwd: string | undefined
   /**
@@ -123,6 +136,7 @@ export function apply(ctx: Context, config: Config): void {
       st = {
         checkpoint: new CheckpointState(),
         exportBuffer: new ExportBuffer(cwd),
+        warn: new WarnThrottle(),
         cwd,
         capture: Promise.resolve(),
         resumeEligible: false,
@@ -133,6 +147,37 @@ export function apply(ctx: Context, config: Config): void {
       states.set(sid, st)
     }
     return st
+  }
+
+  /**
+   * Steer a context-pressure reminder into the agent, the dsh equivalent of
+   * `context_guard.py warn` (55/75/90 bands, same 15-minute per-session
+   * throttle). Called from tool results (long tool-only turns) and from the
+   * turn-stopping boundary; the shared throttle prevents duplicates, while a
+   * raised band (guard or handoff) is delivered immediately.
+   */
+  function maybeWarn(agent: Agent, st: SessionState, tokens: number, window: number): void {
+    const band = guardBand(tokens, window)
+    if (!band) {
+      st.warn.reset()
+      return
+    }
+    const ratio = tokens / window
+    if (st.warn.check(Math.max(band, handoffBandPercent(ratio))) === undefined) return
+    const pct = Math.round(ratio * 100)
+    const usedK = Math.round(tokens / 1000)
+    const limitK = Math.round(window / 1000)
+    const tail = ratio >= handoffThreshold()
+      ? '已达到自动 handoff 档位，建议立即收尾或运行 /handoff。'
+      : '可运行 /handoff，或先收尾当前任务。'
+    try {
+      agent.steer(createUserMessage({
+        content: [{ type: 'text', text: `<system-reminder>上下文约 ${pct}%（${usedK}k/${limitK}k）。${tail}</system-reminder>` } satisfies ContentBlock] as ContentBlock[],
+        source: CONTEXT_SOURCE,
+      }))
+    } catch {
+      // A disposed or read-only agent must not break the tool/stop pipeline.
+    }
   }
 
   // --- SessionStart → agent/created (serial, awaited): rescue stale buffers + resume ---
@@ -209,6 +254,12 @@ export function apply(ctx: Context, config: Config): void {
         tool_input: exec.arguments,
       }, log)
     }
+    // context_guard v1.8.0 also checks on PostToolUse: a turn that runs tools
+    // for hours without a new prompt must still learn that the window is
+    // filling. The throttle keeps this to one reminder per band.
+    if (config.checkpoints !== false) {
+      maybeWarn(agent, st, contextTokensOf(ctx, agent), contextWindowOf(agent))
+    }
   })
 
   // --- Assistant conclusions + compaction flush + token metering (global feed) ---
@@ -234,11 +285,26 @@ export function apply(ctx: Context, config: Config): void {
       return
     }
     if (event.type === 'compaction/start') {
-      // PreCompact equivalent: flush before history is compressed away, after
-      // any in-flight assistant capture has landed.
-      const flush = (): void => fireHookCommand(resolved, 'flush', basePayload(sid, st?.cwd, 'PreCompact'), log)
-      if (st) void st.capture.then(flush)
-      else flush()
+      // PreCompact equivalent: flush mem0, and (kit v1.8.0) force a checkpoint
+      // before history is compressed away. The forced write bypasses the 15s
+      // throttle so a turn that fills the window still leaves resumable state.
+      const window = contextLimit(sessionWindowOf(session))
+      const tokens = sessionTokensOf(ctx, session)
+      const ratio = window > 0 ? tokens / window : 0
+      const finish = (): void => {
+        fireHookCommand(resolved, 'flush', basePayload(sid, st?.cwd, 'PreCompact'), log)
+        if (!st || config.checkpoints === false) return
+        st.warn.reset()
+        void (async () => {
+          if (!st.checkpoint.shouldWrite(true)) return
+          await writeCheckpoint(st.cwd ?? process.cwd(), sid, st.checkpoint.snapshot())
+          if (session.header.origin !== 'subagent' && st.cwd && ratio >= handoffThreshold()) {
+            await writeAutoHandoff(st.cwd, sid, st.checkpoint.snapshot(), ratio)
+          }
+        })().catch(() => undefined)
+      }
+      if (st) void st.capture.then(finish)
+      else finish()
     }
   })
 
@@ -257,21 +323,18 @@ export function apply(ctx: Context, config: Config): void {
     // from the route the session last resolved.
     const window = contextWindowOf(agent)
     const contextTokens = contextTokensOf(ctx, agent)
-    if (config.checkpoints !== false && st.checkpoint.shouldWrite()) {
-      const level = guardLevel(contextTokens, window)
-      if (level) {
-        // Fold a warning into the next step via steer — the model sees it and
-        // can wrap up or surface it to the user (mirrors context_guard warn).
-        agent.steer(createUserMessage({
-          content: [{ type: 'text', text: `<system-reminder>上下文占用${level === 'critical' ? '已接近上限' : '较高'}（约 ${contextTokens} tokens）。建议尽快收尾或 /handoff。</system-reminder>` } satisfies ContentBlock] as ContentBlock[],
-          source: CONTEXT_SOURCE,
-        }))
-      }
-      await writeCheckpoint(st.cwd ?? process.cwd(), sid, st.checkpoint.snapshot())
-      // Deterministic handoff: the model cannot be relied on once the context
-      // is near full, so the bridge writes the same 80/90/97% bands itself.
-      if (agent.session.header.origin !== 'subagent' && st.cwd && window > 0) {
-        void writeAutoHandoff(st.cwd, sid, st.checkpoint.snapshot(), contextTokens / window)
+    if (config.checkpoints !== false) {
+      // Warn on its own throttle (not the checkpoint write throttle): a turn
+      // boundary is also the natural place to repeat a still-current warning
+      // after the 15-minute window has elapsed.
+      maybeWarn(agent, st, contextTokens, window)
+      if (st.checkpoint.shouldWrite()) {
+        await writeCheckpoint(st.cwd ?? process.cwd(), sid, st.checkpoint.snapshot())
+        // Deterministic handoff: the model cannot be relied on once the context
+        // is near full, so the bridge writes the same 80/90/97% bands itself.
+        if (agent.session.header.origin !== 'subagent' && st.cwd && window > 0) {
+          void writeAutoHandoff(st.cwd, sid, st.checkpoint.snapshot(), contextTokens / window)
+        }
       }
     }
     // Refresh the UI status file at every turn boundary (buffer depth, pause
@@ -365,23 +428,32 @@ function safeJsonPreview(args: unknown): string {
 }
 
 /** Context window size from the route the session resolved (0 → guard disabled). */
-function contextWindowOf(agent: Agent): number {
+function sessionWindowOf(session: Session): number {
   try {
-    return agent.session.requestContext()?.contextWindow ?? 0
+    return session.requestContext()?.contextWindow ?? 0
   } catch {
     return 0
   }
 }
 
+/** Effective guard window: the route window, capped by `CONTEXT_GUARD_TOKENS`. */
+function contextWindowOf(agent: Agent): number {
+  return contextLimit(sessionWindowOf(agent.session))
+}
+
 /** Tokens currently occupying the session context (tokenMeter; 0 when absent). */
-function contextTokensOf(ctx: Context, agent: Agent): number {
+function sessionTokensOf(ctx: Context, session: Session): number {
   try {
     const meter = ctx.get('tokenMeter') as { measure?: (session: unknown) => { totalTokens?: number } } | undefined
-    const measured = meter?.measure?.(agent.session)
+    const measured = meter?.measure?.(session)
     return typeof measured?.totalTokens === 'number' ? measured.totalTokens : 0
   } catch {
     return 0
   }
+}
+
+function contextTokensOf(ctx: Context, agent: Agent): number {
+  return sessionTokensOf(ctx, agent.session)
 }
 
 function defaultHooksScript(): string {

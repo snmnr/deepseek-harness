@@ -8,7 +8,7 @@
  * 行为：
  *   - 读取项目根的 .affine-docs.config.json 与发布清单；
  *   - 日期优先取 md frontmatter 的 date:，其次文件名 YYYY-MM-DD，最后文件 mtime；
- *   - 在 AI-Docs/<项目>/ 下创建 YYYY/MM 文件夹；
+ *   - 在 AI/AI-Docs/<项目>/ 下创建 YYYY/MM 文件夹（根路径可由 config.rootFolder 覆盖）；
  *   - 用 move_organize_node 移动文档节点，同步移动本地文件；
  *   - 更新 manifest 的 key/folder 与蒸馏台账的 note 路径。
  */
@@ -60,6 +60,10 @@ const CFG_FILE = path.join(ROOT, '.affine-docs.config.json');
 let fileCfg = {};
 if (fs.existsSync(CFG_FILE)) { try { fileCfg = JSON.parse(fs.readFileSync(CFG_FILE, 'utf8')); } catch {} }
 const PROJECT = String(ARGS.project || fileCfg.project || path.basename(ROOT)).trim();
+const GLOBAL_CFG = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(HOME, '.affine-docs', 'config.json'), 'utf8')); } catch { return {}; }
+})();
+const ROOT_PATH = String(process.env.AFFINE_ROOT_FOLDER || GLOBAL_CFG.rootFolder || 'AI/AI-Docs').trim();
 const STATE_ID = sha(ROOT).slice(0, 16);
 const MANIFEST = path.join(MANIFEST_DIR, `${STATE_ID}.json`);
 
@@ -183,10 +187,19 @@ async function main() {
   await connect();
   const res = await callTool('list_organize_nodes', { workspaceId: CONFIG.workspaceId });
   const nodes = Array.isArray(res) ? res : res?.nodes || res?.items || res?.value || [];
-  const rootFolder = nodes.find((n) => n.type === 'folder' && nodeName(n) === 'AI-Docs' && !(n.parentId ?? null));
-  if (!rootFolder) throw new Error('找不到 AI-Docs 根文件夹');
+  function findFolderPath(segments) {
+    let parentId = null, node = null;
+    for (const name of segments) {
+      node = nodes.find((n) => n.type === 'folder' && (n.parentId ?? null) === parentId && nodeName(n) === name);
+      if (!node) return null;
+      parentId = node.id;
+    }
+    return node;
+  }
+  const rootFolder = findFolderPath(ROOT_PATH.split('/').filter(Boolean));
+  if (!rootFolder) throw new Error(`找不到根文件夹 ${ROOT_PATH}`);
   const projectFolder = nodes.find((n) => n.type === 'folder' && (n.parentId ?? null) === rootFolder.id && nodeName(n) === PROJECT);
-  if (!projectFolder) throw new Error(`找不到项目文件夹 AI-Docs/${PROJECT}`);
+  if (!projectFolder) throw new Error(`找不到项目文件夹 ${ROOT_PATH}/${PROJECT}`);
 
   const folderCache = new Map();
   async function ensureFolder(yyyy, mm) {
@@ -208,11 +221,12 @@ async function main() {
     return m.id;
   }
 
+  // doc 节点的 docId 放在 data（type=doc, data='<docId>'），没有独立 docId 字段。
   const docNodes = new Map();
   for (const n of nodes) {
     if (n.type !== 'doc') continue;
-    docNodes.set(nodeName(n), n);
-    if (n.docId) docNodes.set(n.docId, n);
+    const id = n.docId || (typeof n.data === 'string' ? n.data : n.data?.docId) || '';
+    if (id) docNodes.set(id, n);
   }
 
   const index = readJson(INDEX_PATH, null);
@@ -233,7 +247,7 @@ async function main() {
         fs.renameSync(oldLocal, newLocal);
       }
       delete manifest[p.key];
-      manifest[p.newKey] = { ...p.entry, folder: `AI-Docs/${PROJECT}/${p.date[0]}/${p.date[1]}` };
+      manifest[p.newKey] = { ...p.entry, folder: `${ROOT_PATH}/${PROJECT}/${p.date[0]}/${p.date[1]}` };
       if (index?.sessions) {
         for (const rec of Object.values(index.sessions)) {
           if (rec?.note && path.resolve(rec.note) === path.resolve(oldLocal)) rec.note = path.resolve(newLocal);

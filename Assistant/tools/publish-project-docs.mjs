@@ -12,9 +12,13 @@
  *   --include <glob>      只包含匹配的 md（可重复）
  *   --exclude <glob>      排除匹配的 md（可重复）
  *   --flat                不保留子目录，全部放在 AI-Docs/<项目>/
+ *   --plan-layout         只读预演：打印生命周期目录路由，不写 AFFiNE
+ *   --reconcile           只读对账：列出 manifest 中源文件已不存在的文档
+ *   --manifest <路径>     指定 manifest（测试用；默认按项目根计算）
+ *   --json-out <路径>     plan/reconcile 结果写入指定 JSON
  *   --help, -h            显示帮助
  *
- * 项目根可用 .affine-docs.config.json 覆盖（字段：project / include / exclude / flat）。
+ * 项目根可用 .affine-docs.config.json 覆盖（字段：project / include / exclude / flat / layout）。
  */
 // 配置示例：{ "project": "名称", "include": ["docs/**/*.md"], "exclude": ["draft/**"], "flat": false }
 import fs from 'node:fs';
@@ -24,7 +28,8 @@ import crypto from 'node:crypto';
 
 const STATE_DIR = path.join(os.homedir(), '.affine-docs');
 function readJsonSafe(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return {}; }
+  // 去掉 BOM：手工编辑过的 JSON 常带 BOM，JSON.parse 会抛错并静默返回 {}
+  try { return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, '')); } catch { return {}; }
 }
 // 优先级：环境变量 > ~/.affine-docs/config.json > 内置默认值
 const FILE_CFG = readJsonSafe(path.join(STATE_DIR, 'config.json'));
@@ -33,7 +38,7 @@ const CONFIG = {
   tokenFile: process.env.AFFINE_TOKEN_FILE || FILE_CFG.tokenFile || path.join(os.homedir(), '.secrets', 'affine_mcp_token.txt'),
   workspaceId: process.env.AFFINE_WORKSPACE_ID || FILE_CFG.workspaceId || 'c98ccc82-d368-4a3c-ac2d-1cd6bab61b02',
   webBase: process.env.AFFINE_WEB_BASE || FILE_CFG.webBase || 'https://wiki.shm.fun:4430',
-  rootFolder: process.env.AFFINE_ROOT_FOLDER || FILE_CFG.rootFolder || 'AI-Docs',
+  rootFolder: process.env.AFFINE_ROOT_FOLDER || FILE_CFG.rootFolder || 'AI/AI-Docs',
   stateDir: STATE_DIR,
   maxFileBytes: 512 * 1024,
   maxFiles: 500,
@@ -61,11 +66,15 @@ function usage() {
   --exclude <glob>      排除匹配的 md（可重复）
   --flat                不保留子目录，全部放在 AI-Docs/<项目>/
   --no-pointer          不往 mem0 写“文档已发布”的指针记忆
+  --plan-layout         只读预演：打印生命周期目录路由，不写 AFFiNE
+  --reconcile           只读对账：列出 manifest 中源文件已不存在的文档
+  --manifest <路径>     指定 manifest（测试用；默认按项目根计算）
+  --json-out <路径>     plan/reconcile 结果写入指定 JSON
   --help, -h            显示帮助`);
 }
 
 function parseArgs(argv) {
-  const out = { root: null, project: null, preview: false, force: false, flat: null, noPointer: false, includes: [], excludes: [] };
+  const out = { root: null, project: null, preview: false, force: false, flat: null, noPointer: false, includes: [], excludes: [], planLayout: false, reconcile: false, manifest: null, jsonOut: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { usage(); process.exit(0); }
@@ -74,6 +83,10 @@ function parseArgs(argv) {
     else if (a === '--all' || a === '--force') out.force = true;
     else if (a === '--flat') out.flat = true;
     else if (a === '--no-pointer') out.noPointer = true;
+    else if (a === '--plan-layout') out.planLayout = true;
+    else if (a === '--reconcile') out.reconcile = true;
+    else if (a === '--manifest') out.manifest = argv[++i];
+    else if (a === '--json-out') out.jsonOut = argv[++i];
     else if (a === '--include') out.includes.push(argv[++i]);
     else if (a === '--exclude') out.excludes.push(argv[++i]);
     else if (!a.startsWith('-') && !out.root) out.root = a;
@@ -82,6 +95,7 @@ function parseArgs(argv) {
   return out;
 }
 const ARGS = parseArgs(process.argv.slice(2));
+const PLAN_MODE = ARGS.planLayout || ARGS.reconcile;
 const ROOT = path.resolve(ARGS.root || process.cwd());
 if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
   throw new Error(`目录不存在：${ROOT}`);
@@ -178,6 +192,67 @@ function bodyOf(md) {
 // 去掉 YAML frontmatter（source / generated_at 等元数据不发布到 AFFiNE）
 function stripFrontmatter(md) {
   return md.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+}
+// 解析 frontmatter（只支持本项目用到的简单 YAML：标量、布尔、行内数组）
+function parseFrontmatter(md) {
+  const m = md.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (!m) return { meta: {}, body: md };
+  const meta = {};
+  for (const line of m[1].split(/\r?\n/)) {
+    const mm = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!mm) continue;
+    let v = mm[2].trim();
+    if (v.startsWith('[') && v.endsWith(']')) {
+      v = v.slice(1, -1).split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    } else if (v === 'true' || v === 'false') {
+      v = v === 'true';
+    } else {
+      v = v.replace(/^["']|["']$/g, '');
+    }
+    meta[mm[1]] = v;
+  }
+  return { meta, body: md.slice(m[0].length) };
+}
+
+// 生命周期目录：知识 / 过程记录 / 归档。默认值保持与现有发布行为兼容。
+const LAYOUT = {
+  knowledgeRoot: fileCfg.layout?.knowledgeRoot || CONFIG.rootFolder || 'AI/AI-Docs',
+  logsRoot: fileCfg.layout?.logsRoot || 'AI/AI-Logs',
+  archiveRoot: fileCfg.layout?.archiveRoot || 'AI/AI-Archive',
+};
+const KIND_LOG = new Set(['log', 'checkpoint', 'handoff', 'distill', 'auto-checkpoint', 'working-note']);
+const KIND_KNOWLEDGE = new Set([
+  'knowledge', 'design', 'runbook', 'reference', 'roadmap',
+  // 本项目实际出现过的知识类 kind：结项、诊断、调研、计划、复测报告
+  'closing', 'diagnosis', 'research', 'research-plan', 'plan',
+  'report', 'analysis', 'spec', 'guide', 'manual', 'evaluation', 'eval',
+]);
+// 文件名像过程记录才归 log；notes/ 下混着日志和研究文档，不能只按目录判断
+const LOG_NAME_RX = /checkpoint|handoff|自动\s*checkpoint|对话蒸馏|distill(?:ed)?[-_]?history/i;
+function normalizeKind(rel, meta = {}) {
+  const k = String(meta.kind || '').toLowerCase();
+  if (KIND_LOG.has(k)) return 'log';
+  if (['decision', 'adr'].includes(k)) return 'decision';
+  if (KIND_KNOWLEDGE.has(k)) return 'knowledge';
+  if (String(meta.source || '').toLowerCase() === 'auto-checkpoint') return 'log';
+  const segments = rel.split('/');
+  if (segments.includes('_state') || rel.startsWith('distill-history/')) return 'log';
+  if (LOG_NAME_RX.test(path.posix.basename(rel))) return 'log';
+  return 'knowledge';
+}
+function routeFor(rel, meta = {}) {
+  const status = String(meta.status || 'active').toLowerCase();
+  const kind = normalizeKind(rel, meta);
+  if (['superseded', 'archived', 'obsolete', 'deprecated'].includes(status)) {
+    return { root: LAYOUT.archiveRoot, kind: 'archive', reason: status };
+  }
+  if (kind === 'log') return { root: LAYOUT.logsRoot, kind: 'log', reason: 'log' };
+  return { root: LAYOUT.knowledgeRoot, kind: 'knowledge', reason: 'knowledge' };
+}
+function targetSegments(rel, meta = {}) {
+  const route = routeFor(rel, meta);
+  const dir = FLAT ? '' : path.posix.dirname(rel);
+  return [route.root, PROJECT, ...(dir && dir !== '.' ? dir.split('/') : [])];
 }
 function docUrl(docId) {
   return `${CONFIG.webBase.replace(/\/+$/, '')}/workspace/${CONFIG.workspaceId}/${docId}`;
@@ -281,6 +356,34 @@ function readMem0Config() {
   if (!c.api_url || !c.api_key) return null;
   return { url: String(c.api_url).replace(/\/+$/, ''), key: c.api_key, userId: c.user_id || 'me' };
 }
+// 按 docId 精确查已有指针：manifest 可能被重置/换机器，只靠本地 hash 会重复写。
+// 标题里带时间（如「自动 Handoff 14:39」）时正文每次不同，必须按 docId 找到旧条目再更新。
+async function findPointer(cfg, docId) {
+  try {
+    const res = await fetch(`${cfg.url}/search`, {
+      method: 'POST',
+      headers: { 'X-API-Key': cfg.key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: `文档指针 ${docId}`,
+        filters: { user_id: cfg.userId, doc_id: String(docId) },
+        // 同一 docId 可能残留多条历史指针（已标 superseded），多取几条再挑未归档的
+        top_k: 10,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    for (const hit of data.results || []) {
+      const md = hit.metadata || {};
+      if (String(md.doc_id || '') !== String(docId)) continue;
+      if (String(md.status || '') === 'superseded') continue;
+      return hit.id;
+    }
+  } catch {
+    // 查重失败不阻塞发布，退回新增
+  }
+  return null;
+}
+
 async function writePointerMemory(rel, title, docId, folder) {
   if (ARGS.noPointer) return;
   const cfg = readMem0Config();
@@ -288,23 +391,36 @@ async function writePointerMemory(rel, title, docId, folder) {
   const text = `文档指针：${title}（${rel}）已发布到 AFFiNE ${folder}，docId=${docId}。URL：${docUrl(docId)}`;
   const h = sha(text);
   if (manifest[rel]?.pointerHash === h) return;
+  const metadata = {
+    project: PROJECT, source: 'doc_pointer', doc_path: rel,
+    doc_id: docId, doc_url: docUrl(docId), folder,
+  };
+  const existingId = await findPointer(cfg, docId);
   try {
-    const res = await fetch(`${cfg.url}/memories`, {
-      method: 'POST',
-      headers: { 'X-API-Key': cfg.key, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: [{ role: 'user', content: text }],
-        user_id: cfg.userId,
-        infer: false,
-        metadata: {
-          project: PROJECT, source: 'doc_pointer', doc_path: rel,
-          doc_id: docId, doc_url: docUrl(docId), folder,
-        },
-      }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (existingId) {
+      // 同一文档只保留一条指针：标题/目录变了就原地更新
+      const res = await fetch(`${cfg.url}/memories/${existingId}`, {
+        method: 'PUT',
+        headers: { 'X-API-Key': cfg.key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, metadata }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      log(`pointer updated ${rel}`);
+    } else {
+      const res = await fetch(`${cfg.url}/memories`, {
+        method: 'POST',
+        headers: { 'X-API-Key': cfg.key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: text }],
+          user_id: cfg.userId,
+          infer: false,
+          metadata,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      log(`pointer ${rel}`);
+    }
     if (manifest[rel]) manifest[rel].pointerHash = h;
-    log(`pointer ${rel}`);
   } catch (e) {
     // 指针是增强项，失败不能影响发布结果
     log(`pointer skipped ${rel}: ${e.message}`);
@@ -400,7 +516,75 @@ async function ensureFolder(segments) {
   return parentId;
 }
 
+// 只读预演：计算生命周期路由 + 源文件消失对账。不连接 MCP、不写 AFFiNE。
+function planLayout() {
+  const files = walk(ROOT).sort((a, b) => a.rel.localeCompare(b.rel));
+  const manifestPath = ARGS.manifest ? path.resolve(ARGS.manifest) : MANIFEST;
+  const manifest = readJsonSafe(manifestPath);
+  const routes = { knowledge: [], log: [], archive: [] };
+  for (const f of files) {
+    const raw = fs.readFileSync(f.abs, 'utf8').replace(/^﻿/, '');
+    const { meta } = parseFrontmatter(raw);
+    const route = routeFor(f.rel, meta);
+    routes[route.kind].push({
+      rel: f.rel,
+      target: targetSegments(f.rel, meta).join('/'),
+      route_kind: route.kind,
+      status: String(meta.status || 'active'),
+      kind: normalizeKind(f.rel, meta),
+    });
+  }
+  const missing = Object.keys(manifest)
+    .filter((rel) => !fs.existsSync(path.join(ROOT, rel)))
+    .map((rel) => ({
+      rel,
+      title: manifest[rel]?.title || '',
+      last_published: manifest[rel]?.updatedAt || '',
+      target: targetSegments(rel, { status: 'archived' }).join('/'),
+      reason: 'source_missing',
+    }));
+  const report = {
+    at: new Date().toISOString(),
+    mode: ARGS.reconcile ? 'reconcile' : 'plan-layout',
+    root: ROOT,
+    project: PROJECT,
+    layout: LAYOUT,
+    manifest: manifestPath,
+    counts: {
+      files: files.length,
+      knowledge: routes.knowledge.length,
+      log: routes.log.length,
+      archive: routes.archive.length,
+      missing: missing.length,
+    },
+    routes,
+    missing,
+  };
+  const outPath = ARGS.jsonOut
+    ? path.resolve(ARGS.jsonOut)
+    : path.join(CONFIG.stateDir, 'plan', `${STATE_ID}-layout.json`);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf8');
+
+  log(`[plan] roots knowledge=${LAYOUT.knowledgeRoot} logs=${LAYOUT.logsRoot} archive=${LAYOUT.archiveRoot}`);
+  log(`[plan] files=${files.length} knowledge=${routes.knowledge.length} log=${routes.log.length} archive=${routes.archive.length} missing=${missing.length}`);
+  const preview = [
+    ...routes.knowledge.map((r) => ['knowledge', r]),
+    ...routes.log.map((r) => ['log', r]),
+    ...routes.archive.map((r) => ['archive', r]),
+  ];
+  for (const [kind, r] of preview.slice(0, 40)) log(`  [${kind}] ${r.rel} -> ${r.target}`);
+  if (preview.length > 40) log(`  ... 还有 ${preview.length - 40} 条，见 JSON`);
+  if (missing.length) {
+    log(`[reconcile] 源文件已不存在 ${missing.length} 篇（建议归档，不删除）：`);
+    for (const m of missing.slice(0, 20)) log(`  ${m.rel} -> ${m.target}`);
+    if (missing.length > 20) log(`  ... 还有 ${missing.length - 20} 条，见 JSON`);
+  }
+  log(`[plan] 已写入 ${outPath}（本地只读，未改动 AFFiNE）`);
+}
+
 async function main() {
+  if (PLAN_MODE) { planLayout(); return; }
   if (fs.existsSync(LOCK)) {
     const age = Date.now() - fs.statSync(LOCK).mtimeMs;
     if (age < 10 * 60 * 1000 && !ARGS.force) { log('另一个发布进程仍在运行，跳过'); return; }
@@ -419,7 +603,9 @@ async function main() {
 
   try {
     for (const f of files) {
-      const raw = stripFrontmatter(fs.readFileSync(f.abs, 'utf8').replace(/^\uFEFF/, ''));
+      const rawFull = fs.readFileSync(f.abs, 'utf8').replace(/^\uFEFF/, '');
+      const raw = stripFrontmatter(rawFull);
+      const { meta } = parseFrontmatter(rawFull);
       const suspicious = (raw.match(MOJIBAKE_RX) || []).length;
       if (suspicious >= MOJIBAKE_LIMIT) {
         const msg = `${f.rel}: 疑似 GBK/UTF-8 乱码（命中 ${suspicious} 处），请用 UTF-8 无 BOM 重新保存`;
@@ -437,15 +623,22 @@ async function main() {
 
       if (prev && prev.hash === hash && !ARGS.force) { skipped++; continue; }
       if (ARGS.preview) {
-        changes.push(`${prev ? 'update' : 'create'} ${f.rel} -> AI-Docs/${PROJECT}/${FLAT ? '' : path.posix.dirname(f.rel)}`);
+        const previewDir = FLAT ? '' : path.posix.dirname(f.rel);
+        const previewTarget = prev?.docId
+          ? (prev.folder || `${CONFIG.rootFolder}/${PROJECT}/${previewDir}`)
+          : [routeFor(f.rel, meta).root, PROJECT, ...(previewDir && previewDir !== '.' ? [previewDir] : [])].join('/');
+        changes.push(`${prev?.docId ? 'update' : 'create'} ${f.rel} -> ${previewTarget}`);
         continue;
       }
 
       const dir = FLAT ? '' : path.posix.dirname(f.rel);
-      const segments = [CONFIG.rootFolder, PROJECT, ...(dir && dir !== '.' ? dir.split('/') : [])];
+      const isNew = !prev?.docId;
+      // 新建文档按生命周期落位；存量文档只更新内容、不自动移动（搬迁交给 migrate-plan/apply）
+      const segments = isNew
+        ? [...routeFor(f.rel, meta).root.split('/'), PROJECT, ...(dir && dir !== '.' ? dir.split('/') : [])]
+        : [...CONFIG.rootFolder.split('/'), PROJECT, ...(dir && dir !== '.' ? dir.split('/') : [])];
       try {
         await ensureConnected();
-        const folderId = await ensureFolder(segments);
         let docId = prev?.docId;
         if (docId) {
           await callTool('replace_doc_with_markdown', { workspaceId: CONFIG.workspaceId, docId, markdown: body });
@@ -455,6 +648,7 @@ async function main() {
           updated++;
           changes.push(`更新：${f.rel}`);
         } else {
+          const folderId = await ensureFolder(segments);
           const res = await callTool('create_doc_from_markdown', {
             workspaceId: CONFIG.workspaceId, title, markdown: body, folderId,
           });
@@ -462,10 +656,11 @@ async function main() {
           created++;
           changes.push(`上传：${f.rel}`);
         }
+        const folderRecorded = isNew ? segments.join('/') : (prev.folder || segments.join('/'));
         manifest[f.rel] = {
-          docId, folder: segments.join('/'), title, hash, updatedAt: new Date().toISOString(),
+          docId, folder: folderRecorded, title, hash, updatedAt: new Date().toISOString(),
         };
-        await writePointerMemory(f.rel, title, docId, segments.join('/'));
+        await writePointerMemory(f.rel, title, docId, folderRecorded);
         writeManifest(manifest);
       } catch (e) {
         errors.push(`${f.rel}: ${e.message}`);

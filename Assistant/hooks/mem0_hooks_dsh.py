@@ -8,7 +8,8 @@ mem0 hooks 的 dsh（deepseek-harness）包装层。
   - 新增 assistant 子命令（dsh 原生插件经 session/event 捕获的助手结论）
   - 新增 ui-status 子命令（供 UI 面板轮询的 JSON 状态）
   - 数据目录经环境变量 MEM0_DATA_DIR 覆写（与 Claude CLI 安装的数据隔离）
-  - 后台落盘改走本包装层（保证 detach 子进程同样用 MEM0_DATA_DIR）
+  - 状态上报（report/doctor）也只用 dsh 侧配置，不继承 Claude CLI 的 ~/.claude/mem0
+  - 后台落盘/上报改走本包装层（保证 detach 子进程同样用 MEM0_DATA_DIR）
 
 配置优先级（与原脚本一致）：环境变量 > config.json > 默认值。
 子命令：在原脚本全部子命令基础上新增 assistant / ui-status。
@@ -16,6 +17,7 @@ mem0 hooks 的 dsh（deepseek-harness）包装层。
 
 import json
 import os
+import platform
 import sys
 
 # ---------- 定位并加载原脚本（零改动） ----------
@@ -73,11 +75,34 @@ _original.USER_ID = (
     os.environ.get("MEM0_DEFAULT_USER_ID") or _CFG_DSH.get("user_id") or _original.USER_ID or "me"
 )
 
-# ---------- 后台落盘改走本包装层 ----------
-# 原脚本 _spawn_detached 用 sys.executable + os.path.abspath(__file__) 拉起
-# flush-detached —— __file__ 指向原脚本，detach 子进程会以旧 DATA_DIR 运行。
-# 这里替换为指向本包装层，使后台进程继承 MEM0_DATA_DIR。
-def _spawn_detached_dsh(sid: str) -> None:
+# 状态上报（可选）同理：原脚本 import 时已从 Claude CLI 的 config 读过
+# REPORT_URL/REPORT_TOKEN/MACHINE_ID，这里必须按 dsh 侧配置重算，
+# 否则 dsh 的报告会发到 Claude 侧 token 对应的机器身份上。
+_original.REPORT_URL = (
+    os.environ.get("MEM0_REPORT_URL") or _CFG_DSH.get("report_url") or ""
+).rstrip("/")
+_original.REPORT_TOKEN = (
+    os.environ.get("MEM0_REPORT_TOKEN") or _CFG_DSH.get("report_token") or ""
+)
+_original.MACHINE_ID = (
+    os.environ.get("MEM0_MACHINE_ID") or _CFG_DSH.get("machine_id")
+    or platform.node() or "unknown"
+)
+_platform_tag = getattr(_original, "_PLATFORM_TAG", {})
+_original.MACHINE_LABEL = (
+    os.environ.get("MEM0_MACHINE_LABEL") or _CFG_DSH.get("machine_label")
+    or "{}-{}".format(
+        _platform_tag.get(platform.system(), (platform.system() or "unknown").lower()),
+        platform.node() or "unknown",
+    )
+)
+
+# ---------- 后台任务（落盘 + 上报）改走本包装层 ----------
+# 原脚本用 sys.executable + os.path.abspath(__file__) 拉起后台子进程；
+# mem0-claude-kit 1.7.22 起后台入口统一为 _spawn_background(args, tag)
+# （flush-detached 与 report-detached 都走它）。__file__ 指向原脚本时，
+# 子进程会以 Claude 侧 DATA_DIR 运行，所以这里替换成包装层。
+def _spawn_background_dsh(args: list, tag: str) -> None:
     os.makedirs(_DATA_DIR, exist_ok=True)
     log_path = os.path.join(_DATA_DIR, "last-flush.log")
     import subprocess
@@ -89,17 +114,56 @@ def _spawn_detached_dsh(sid: str) -> None:
     else:
         kwargs["start_new_session"] = True
     with open(log_path, "ab") as log:
-        log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} flush {sid} ===\n".encode("utf-8"))
+        log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} {tag} ===\n".encode("utf-8"))
         log.flush()
         subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__), "flush-detached", sid],
+            [sys.executable, os.path.abspath(__file__)] + list(args),
             stdout=log,
             stderr=log,
             **kwargs,
         )
 
 
+_original._spawn_background = _spawn_background_dsh
+
+
+def _spawn_detached_dsh(sid: str) -> None:
+    _spawn_background_dsh(["flush-detached", sid], f"flush {sid}")
+
+
 _original._spawn_detached = _spawn_detached_dsh
+
+
+# ---------- doctor 的 hook 注册检查：dsh 不用 settings.json ----------
+# 原脚本读 ~/.claude/settings.json 判断 hook 是否注册；dsh 的事件由
+# mem0-dsh-bridge 插件原生处理，没有逐事件注册表。只要任一 profile 的
+# cordis.patch.yml 挂了这个插件，就报告九个事件齐全。
+_DOCTOR_EVENTS = list(getattr(_original, "DOCTOR_EXPECTED_EVENTS", []))
+
+
+def _doctor_hooks_dsh() -> dict:
+    dsh_home = os.environ.get("DSH_HOME") or os.path.join(os.path.expanduser("~"), ".dsh")
+    profiles = os.path.join(dsh_home, "profiles")
+    try:
+        names = os.listdir(profiles)
+    except OSError:
+        names = []
+    for name in names:
+        patch = os.path.join(profiles, name, "cordis.patch.yml")
+        try:
+            with open(patch, encoding="utf-8-sig") as f:
+                if "mem0-dsh-bridge" in f.read():
+                    return {event: [{"source": "mem0-dsh-bridge"}] for event in _DOCTOR_EVENTS}
+        except OSError:
+            continue
+    return {
+        "_error": "未在 {0}/*/cordis.patch.yml 找到 mem0-dsh-bridge"
+                  "（重跑 install-dsh.ps1）".format(profiles)
+    }
+
+
+if _DOCTOR_EVENTS:
+    _original._doctor_hooks = _doctor_hooks_dsh
 
 
 # ---------- dsh 专属子命令 ----------

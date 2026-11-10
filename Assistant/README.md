@@ -17,7 +17,7 @@ dsh 自带的 Claude Code hooks 桥（`packages/experimental/hooks-claude-code`�
 | A. MCP 配置翻译 | mem0-mcp 注册进 mcp-manager（`${credential:MEM0_API_KEY}`） | patch 块 |
 | B. **原生插件 mem0-dsh-bridge** | 助手结论捕获、失败捕获、召回注入、flush 时机、checkpoint、蒸馏导出 | `plugin/src/*.ts` |
 | C. hooks 桥 | 仅 AFFiNE 文档发布 hook（只读 tool_input.file_path，不需要 transcript） | `hooks/hooks.json` |
-| D. Skills | 13 个命令（mem0-remember/search/…、publish-project-docs、handoff…） | `skills/*.md` |
+| D. Skills | 14 个命令（mem0-remember/search/doctor/…、publish-project-docs、handoff…） | `skills/*.md` |
 | E. 指令引导 | 记忆使用规则追加到 `~/.agents/AGENTS.md` | `templates/agents-block.md` |
 
 ## 目录结构
@@ -30,7 +30,7 @@ Assistant/
 │  ├─ src/index.ts                       # 桥入口：dsh 事件 → Python 子命令翻译 + context 注入
 │  ├─ src/capture.ts                     # spawn python 执行 mem0_hooks 子命令（永不抛错）
 │  ├─ src/checkpoint.ts                  # context_guard 等价物（环形缓冲 + 真实 usage token +
-│  │                                     #   自动 handoff + 启动续接，状态格式与套件 v1.7 互通）
+│  │                                     #   自动 handoff + 上下文 warn + 启动续接，状态格式与套件 v1.8 互通）
 │  ├─ src/export.ts                      # agent/disposed 时导出 CC 兼容 JSONL + distill pending
 │  └─ cordis.yml                         # 源码启动 --patch 挂载样例
 ├─ hooks/
@@ -39,7 +39,7 @@ Assistant/
 │  ├─ hooks.json                         # AFFiNE 桥配置（PostToolUse matcher 为 dsh 小写工具名）
 │  └─ affine-docs-hook.ps1               # .md 写入 → 后台发布（项目根需有 .affine-docs.config.json；
 │                                        #   dsh payload 不带 cwd，从文件路径向上找项目根）
-├─ skills/                               # 13 个 skill 模板（{{HOOKS}}/{{TOOL}}/{{ARCHIVE}}/{{DISTILL}} 占位符）
+├─ skills/                               # 14 个 skill 模板（{{HOOKS}}/{{TOOL}}/{{ARCHIVE}}/{{DISTILL}} 占位符）
 ├─ tools/                                # distill-history.mjs（--projects/DSH_EXPORT_DIR 改动版）等副本
 ├─ templates/agents-block.md             # AGENTS.md 引导块
 └─ ui/                                   # client 插件（P9）：右栏 mem0 面板 + 会话头状态点
@@ -64,14 +64,16 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 `
 
 安装动作（全部幂等）：
 
-1. 套件运行时**只读复制**到 `~/.mem0-claude-dsh/`（original/ mcp/ tools/；mcp/ 预建 uv venv）
+1. 套件运行时**只读复制**到 `~/.mem0-claude-dsh/`（original/ 含 `mem0_hooks.py` + `VERSION`；
+   mcp/ 预建 uv venv；tools/）
 2. 包装层 + hooks.json（占位符替换）→ `~/.mem0-claude-dsh/hooks/`
 3. bridge 插件源码 → `~/.dsh/profiles/<profile>/plugins/mem0-dsh-bridge/`
    （**必须在 profile 树内**：dsh 的 profile resolution 只对 profile 目录下的文件
    路由 `@deepseek-ai/*` 导入；装在 `~/.mem0-claude-dsh/` 下会启动即报
    `Cannot find module '@deepseek-ai/schemastery'`，整个桥静默不激活）
-4. 13 个 skills（占位符替换）→ `~/.dsh/skills/`
-5. mem0 连接配置 → `~/.dsh/mem0/config.json`
+4. 14 个 skills（占位符替换）→ `~/.dsh/skills/`
+5. mem0 连接配置 → `~/.dsh/mem0/config.json`（**合并**写入；可选
+   `-ReportUrl/-ReportToken/-MachineId` 维护状态上报，不传则保留已有值）
 6. API key → `~/.dsh/.credentials.yaml` 的 `refs.MEM0_API_KEY`（不进 patch 明文）
 7. patch 块（marker `# mem0-claude-kit:dsh begin/end` 幂等合并）→
    `~/.dsh/profiles/web/cordis.patch.yml`：mcp-manager `servers.mem0` + `mem0-dsh-bridge` 插件 + hooks-claude-code 桥
@@ -101,15 +103,17 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\uninstall-dsh.ps1 -PurgeDat
 |---|---|---|
 | `agent/created`（startup/clear → 续接注入；compact → flush） | session-start / resume / flush | SessionStart / PreCompact |
 | `agent/pre-step`（用户文本） | user-prompt + 召回注入 | UserPromptSubmit |
-| `tools/result`（isError 分支） | post-tool / post-tool-failure | PostToolUse + **PostToolUseFailure**（桥不支持，原生补齐） |
+| `tools/result`（isError 分支） | post-tool / post-tool-failure + 上下文 warn 检查 | PostToolUse + **PostToolUseFailure**（桥不支持，原生补齐） |
 | `session/event: assistant/message` | assistant（事件尾去重） | Stop 的 transcript 抓取替代 |
-| `session/event: compaction/start` | flush | PreCompact |
-| `agent/turn-stopping` | checkpoint + 自动 handoff（≥阈值）+ 满阈值 flush-detached | Stop |
+| `session/event: compaction/start` | flush + **强制 checkpoint**（+ 达阈值刷新 handoff） | PreCompact |
+| `agent/turn-stopping` | checkpoint + 自动 handoff（≥阈值）+ 上下文 warn（stop 内按阈值 flush-detached） | Stop |
 | `agent/disposed` | session-end + 蒸馏 JSONL 导出 | SessionEnd |
 | `subagent/start / end` | subagent-start / subagent-stop | SubagentStart / Stop |
 
-沉淀契约（buffer_<sid>.json、6000 chars 分片、脱敏、陈旧缓冲抢救、TTL）单点留在
-套件原 `mem0_hooks.py`，本层不改不复制逻辑，仅覆写模块常量。
+沉淀契约（buffer_<sid>.json、2000 chars 分片、脱敏、陈旧缓冲抢救、TTL、flush 锁、
+dead-letter、doctor、状态上报）单点留在套件原 `mem0_hooks.py`，本层不改不复制逻辑，
+仅覆写模块常量（`DATA_DIR`/上报配置）与后台入口（`_spawn_background`）。
+套件 `VERSION` 一并复制到 `~/.mem0-claude-dsh/original/`，`doctor` 因此能显示来源版本。
 
 ## 验证
 
@@ -118,6 +122,7 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\uninstall-dsh.ps1 -PurgeDat
 python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py ui-status
 echo '{"session_id":"t1","cwd":".","text":"测试"}' | python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py assistant
 python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py status
+python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py doctor   # 配置/积压/dead-letter/版本
 
 # 全链路
 pnpm dsh web     # Settings → MCP 应显示 mem0 connected
@@ -136,12 +141,19 @@ checkpoint 产物写在**项目根**（沿会话工作区向上找 `.git` 或 `C
 项目目录不可写时回退 `~/.dsh/state/checkpoints/<slug>/`。dsh 未选目录时工作区是
 `<文档>/deepseek-harness/default-workspace`，要核对时先看会话的 `cwd`。
 同一目录还有 UI 面板读取的 `notes/_state/mem0-status.json`。
-阈值环境变量 `CONTEXT_GUARD_WARN/URGENT/CRITICAL`（默认 0.6/0.75/0.9，相对上下文窗口）。
+阈值环境变量 `CONTEXT_GUARD_WARN/URGENT/CRITICAL`（默认 0.55/0.75/0.9，对齐套件
+context_guard v1.8.0，相对上下文窗口）；`CONTEXT_GUARD_TOKENS` 可把守卫窗口压到真实
+API 上限以下（路由声明的窗口比实际可用大时用）。
 
-## 自动 Handoff / 会话续接（对齐套件 v1.7）
+## 自动 Handoff / 上下文守卫 / 会话续接（对齐套件 v1.8）
 
 dsh 侧不调用 `context_guard.py`（它依赖 CC 的 transcript JSONL），而是在 bridge 里原生实现同一套契约：
 
+- **上下文提醒**（v1.8.0）：`tools/result` 与 `agent/turn-stopping` 都检查占用，55/75/90 三档；
+  同会话同档 15 分钟节流（`CONTEXT_GUARD_THROTTLE` 可调），档位升高（含 handoff 80/90/97）立即提醒，
+  回落到阈值以下或压缩后自动复位。提醒经 `agent.steer` 注入，模型下一轮可见。
+- **压缩前兜底**（v1.8.0）：`compaction/start` 时绕过 15s 写节流强制刷新 checkpoint，
+  达到 `CONTEXT_GUARD_HANDOFF` 再刷新 handoff——单个回合内上下文暴涨也留得下状态。
 - **自动 handoff**：`agent/turn-stopping` 时按 `contextTokens / contextWindow` 计算占用，达到
   `CONTEXT_GUARD_HANDOFF`（默认 `0.8`）就由插件写
   `notes/YYYY/MM/YYYY-MM-DD-HHMM-auto-handoff.md` + `notes/_state/last-handoff.md` +
