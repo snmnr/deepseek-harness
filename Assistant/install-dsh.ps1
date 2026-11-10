@@ -84,14 +84,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $AssistDir = Split-Path -Parent $PSCommandPath   # Assistant/ 目录
 
-# 套件目录不写死本机路径：优先 MEM0_KIT_DIR，否则按仓库布局取上级的
-# mem0-2.2.0\mem0-claude-kit（公开仓库里不暴露个人目录结构）。
+# 套件目录自动探测（公开仓库里不写死个人路径）：
+#   1) MEM0_KIT_DIR
+#   2) 仓库上级的 mem0-2.2.0\mem0-claude-kit（套件源码布局）
+#   3) ~/.mem0-claude（已安装的 Claude kit 布局，mem0_hooks.py + mcp/）
 if (-not $KitDir) {
-    $KitDir = if ($env:MEM0_KIT_DIR) {
-        $env:MEM0_KIT_DIR
-    } else {
-        Join-Path (Split-Path -Parent (Split-Path -Parent $AssistDir)) 'mem0-2.2.0\mem0-claude-kit'
-    }
+    $kitCandidates = @()
+    if ($env:MEM0_KIT_DIR) { $kitCandidates += $env:MEM0_KIT_DIR }
+    $kitCandidates += (Join-Path (Split-Path -Parent (Split-Path -Parent $AssistDir)) 'mem0-2.2.0\mem0-claude-kit')
+    $kitCandidates += (Join-Path $env:USERPROFILE '.mem0-claude')
+    $KitDir = $kitCandidates |
+        Where-Object {
+            $_ -and (
+                (Test-Path (Join-Path $_ 'payload\mem0_hooks.py')) -or
+                (Test-Path (Join-Path $_ 'mem0_hooks.py'))
+            )
+        } |
+        Select-Object -First 1
+    if (-not $KitDir) { $KitDir = $kitCandidates[0] }
 }
 # 套件目录支持两种布局：
 #   1) 套件源码目录：<KitDir>\payload\mem0_hooks.py + payload\mem0-mcp

@@ -83,9 +83,9 @@ Assistant/
 > `packages\bundle\base\node_modules\@deepseek-ai\dsh-commands\lib\typert.host.js`、
 > `apps\cli\node_modules\@deepseek-ai\schemastery\lib\index.cjs`。
 >
-> **设备上没有套件源码目录时**（例如只装了 Claude kit）：默认路径会找不到
-> `payload\mem0_hooks.py`，用 `-KitDir "$env:USERPROFILE\.mem0-claude"`（或设
-> `MEM0_KIT_DIR`）指向已安装目录。
+> **设备上没有套件源码目录时**（例如只装了 Claude kit）：安装器会依次尝试
+> `MEM0_KIT_DIR` → 仓库上级的 `mem0-2.2.0\mem0-claude-kit` → `~/.mem0-claude`。
+> 也可以用 `-KitDir "$env:USERPROFILE\.mem0-claude"` 显式指定；两者都没有时才会报错。
 >
 > **启动报 `failed to parse overlay ... cordis.patch.yml`**：说明 patch 文件被写坏
 > （YAML 无法解析，或混入了非列表的自定义配置）。先看
