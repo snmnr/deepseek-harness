@@ -5,6 +5,9 @@
 可用 `MEM0_KIT_DIR` 覆盖）**零改动**，继续服务 Claude CLI；
 两侧数据完全隔离（`~/.mem0-claude` vs `~/.mem0-claude-dsh`，`~/.claude/mem0` vs `~/.dsh/mem0`）。
 
+> 同步套件新版前先读 [PORTING.md](PORTING.md)：里面有移植流程、验证清单和**强制隐私约定**
+> （不写真实凭据、个人路径、内网域名/工作区 ID；提交用 GitHub noreply）。
+
 ## 为什么需要原生插件
 
 dsh 自带的 Claude Code hooks 桥（`packages/experimental/hooks-claude-code`）只支持 7/30 个事件，
@@ -26,7 +29,9 @@ dsh 自带的 Claude Code hooks 桥（`packages/experimental/hooks-claude-code`�
 ```
 Assistant/
 ├─ install-dsh.ps1 / uninstall-dsh.ps1   # 安装/卸载（幂等、-DryRun、-PurgeData）
+├─ start-dsh.ps1 / start-dsh.cmd         # 一键启动（环境检测 + 自动补齐 + 日志）
 ├─ README.md                             # 本文件
+├─ PORTING.md                            # 套件同步流程 + 强制隐私约定
 ├─ plugin/
 │  ├─ src/index.ts                       # 桥入口：dsh 事件 → Python 子命令翻译 + context 注入
 │  ├─ src/capture.ts                     # spawn python 执行 mem0_hooks 子命令（永不抛错）
@@ -142,6 +147,14 @@ Assistant/
 dead-letter、doctor、状态上报）单点留在套件原 `mem0_hooks.py`，本层不改不复制逻辑，
 仅覆写模块常量（`DATA_DIR`/上报配置）与后台入口（`_spawn_background`）。
 套件 `VERSION` 一并复制到 `~/.mem0-claude-dsh/original/`，`doctor` 因此能显示来源版本。
+
+套件 1.7.24 起，落盘请求遇到连接类错误会重试（`MEM0_FLUSH_ATTEMPTS`，默认 3 次，
+仅超时/断连，4xx/5xx 不重试）；后台上报结束后会顺带把所有超过
+`MEM0_RETRY_MIN_AGE_SECONDS`（默认 60s）的缓冲重试一次，也可手动：
+
+```powershell
+python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py retry-pending
+```
 
 ## 验证
 
