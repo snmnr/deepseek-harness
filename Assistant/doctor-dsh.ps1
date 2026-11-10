@@ -21,6 +21,8 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $InstallDir = Join-Path $env:USERPROFILE '.mem0-claude-dsh'
 $script:problems = @()
+$listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+$dshRunning = $null -ne $listener
 
 function Section([string]$Title) { Write-Host "`n== $Title ==" -ForegroundColor Cyan }
 function Ok([string]$Message) { Write-Host "  OK    $Message" -ForegroundColor Green }
@@ -71,8 +73,10 @@ if ($buffers.Count -gt 0) {
     Ok "缓冲文件 $($buffers.Count) 个（bridge 在采集）"
     $buffers | Sort-Object LastWriteTime -Descending | Select-Object -First 5 |
         ForEach-Object { Write-Host "        $($_.Name)  $($_.Length) B  $($_.LastWriteTime)" }
-} else {
+} elseif ($dshRunning) {
     Warn '没有 buffer_*.json：bridge 没有采集任何事件（可能插件未加载，或尚未发生会话事件）'
+} else {
+    Write-Host '  INFO  dsh 未运行，尚无 buffer 属正常（启动并发一条消息后再看）'
 }
 
 $statusCandidates = @(
@@ -86,11 +90,14 @@ $docStatus = @(Get-ChildItem (Join-Path $env:USERPROFILE 'Documents') -Recurse -
     Select-Object -First 3)
 foreach ($f in $docStatus) { Ok "Documents 下的状态文件：$($f.FullName)  $($f.LastWriteTime)" }
 if (($statusCandidates | Where-Object { Test-Path $_ }).Count -eq 0 -and $docStatus.Count -eq 0) {
-    Warn '没有找到 mem0-status.json：UI 面板会显示“状态文件不可读”'
+    if ($dshRunning) {
+        Warn '没有找到 mem0-status.json：UI 面板会显示“状态文件不可读”'
+    } else {
+        Write-Host '  INFO  dsh 未运行，尚无状态文件属正常（首个 turn 边界后写入）'
+    }
 }
 
 Section '3080 端口'
-$listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) {
     $proc = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
     if ($proc) {
@@ -99,15 +106,20 @@ if ($listener) {
         Ok "监听 3080：PID $($listener.OwningProcess)（进程信息不可读）"
     }
 } else {
-    Write-Host '  3080 当前没有监听'
+    Write-Host '  INFO  3080 当前没有监听：dsh 未运行，先启动 start-dsh.ps1'
 }
 
 Section '最近的启动日志（只列关键行）'
 $startup = Get-ChildItem (Join-Path $DshHome 'logs') -Filter 'startup-*.log' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$buildTimes = @($markers.Values | Where-Object { Test-Path $_ } | ForEach-Object { (Get-Item $_).LastWriteTime })
+$buildTime = ($buildTimes | Measure-Object -Maximum).Maximum
 if ($startup) {
     Write-Host "  文件：$($startup.FullName)"
     Write-Host "  时间：$($startup.LastWriteTime)"
+    if ($buildTime -and $startup.LastWriteTime -lt $buildTime) {
+        Write-Host "  STALE 该日志早于最近构建（$buildTime），可能来自构建前的旧启动；请以新启动日志为准" -ForegroundColor Yellow
+    }
     $hits = Select-String -Path $startup.FullName -Pattern 'startup failed|plugin did not activate|failed to import|typert|client bundle|client-modules|mem0-dsh-bridge|dsh web:' -ErrorAction SilentlyContinue |
         Select-Object -Last 20
     if ($hits) {
@@ -116,7 +128,7 @@ if ($startup) {
         Ok '没有匹配到错误关键字'
     }
 } else {
-    Warn '没有 startup-*.log'
+    if ($dshRunning) { Warn '没有 startup-*.log' } else { Write-Host '  INFO  dsh 未运行，还没有新的启动日志' }
 }
 
 if ($Deep -and (Test-Path $hooks)) {
