@@ -1,7 +1,8 @@
 # mem0-claude-kit → deepseek-harness（dsh）移植版
 
 本目录是 mem0-claude-kit（Claude Code 长期记忆/AFFiNE 文档闭环套件）在 dsh 上的**全新移植实现**。
-套件原目录（`D:\Working\AIAssistantDev\mem0-2.2.0\mem0-claude-kit`）**零改动**，继续服务 Claude CLI；
+套件原目录（`<mem0-claude-kit 目录>`，默认取仓库上级的 `mem0-2.2.0\mem0-claude-kit`，
+可用 `MEM0_KIT_DIR` 覆盖）**零改动**，继续服务 Claude CLI；
 两侧数据完全隔离（`~/.mem0-claude` vs `~/.mem0-claude-dsh`，`~/.claude/mem0` vs `~/.dsh/mem0`）。
 
 ## 为什么需要原生插件
@@ -49,18 +50,22 @@ Assistant/
 
 ```powershell
 # 审计（不写任何文件）
-D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 -DryRun
+.\Assistant\install-dsh.ps1 -DryRun
 
 # 实装（缺参会交互询问 ApiUrl / ApiKey / UserId）
-D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 `
+.\Assistant\install-dsh.ps1 `
   -ApiUrl https://mem0.<你的域名>:4430 `
   -ApiKey m0sk_xxx `
-  -UserId jesse
+  -UserId me
 ```
 
 > **ApiUrl 必须填真实地址。** 它会以 `MEM0_API_URL` 环境变量注入 hook 子进程，
 > 优先级高于 `~/.dsh/mem0/config.json`；残留 `example.com` 占位符时，召回与落盘
 > 都会静默失败（hook 契约不阻塞会话，只在 stderr 留一行）。安装器会对此告警。
+>
+> **UserId 怎么填**：它是长期记忆的归属标识。同一个 mem0 服务里，多台机器或
+> Claude CLI 与 dsh 用同一个 id 才会互相看到记忆；取一个自己稳定的值即可
+> （如 `me`、你的名字），不要填别人的 id。
 
 安装动作（全部幂等）：
 
@@ -116,8 +121,8 @@ D:\Working\AIAssistantDev\deepseek-harness\Assistant\install-dsh.ps1 `
 ## 卸载
 
 ```powershell
-D:\Working\AIAssistantDev\deepseek-harness\Assistant\uninstall-dsh.ps1            # 保留 ~/.dsh/mem0 数据
-D:\Working\AIAssistantDev\deepseek-harness\Assistant\uninstall-dsh.ps1 -PurgeData # 连数据一起删
+.\Assistant\uninstall-dsh.ps1            # 保留 ~/.dsh/mem0 数据
+.\Assistant\uninstall-dsh.ps1 -PurgeData # 连数据一起删
 ```
 
 ## 事件映射（bridge 插件）
@@ -167,6 +172,30 @@ checkpoint 产物写在**项目根**（沿会话工作区向上找 `.git` 或 `C
 阈值环境变量 `CONTEXT_GUARD_WARN/URGENT/CRITICAL`（默认 0.55/0.75/0.9，对齐套件
 context_guard v1.8.0，相对上下文窗口）；`CONTEXT_GUARD_TOKENS` 可把守卫窗口压到真实
 API 上限以下（路由声明的窗口比实际可用大时用）。
+
+## AFFiNE 发布配置（可选）
+
+发布器/归档器内置的地址只是示例占位符；真实值放全局配置，不要把内网地址写进仓库：
+
+`%USERPROFILE%\.affine-docs\config.json`
+
+```json
+{
+  "mcpUrl": "https://affine.example.com:4430/mcp",
+  "webBase": "https://affine.example.com:4430",
+  "workspaceId": "00000000-0000-0000-0000-000000000000",
+  "rootFolder": "AI/AI-Docs",
+  "tokenFile": "C:/Users/<you>/.secrets/affine_mcp_token.txt"
+}
+```
+
+- `mcpUrl`：AFFiNE MCP 服务地址（也可用环境变量 `AFFINE_MCP_URL`）；
+- `webBase`：AFFiNE Web 根地址，用来生成文档链接（`AFFINE_WEB_BASE`）；
+- `workspaceId`：目标工作区 ID（`AFFINE_WORKSPACE_ID`）；不填会明确报错，不会误连示例地址；
+- `tokenFile`：MCP 访问令牌文件（`AFFINE_TOKEN_FILE`）；
+- `rootFolder`：新文档根目录，默认 `AI/AI-Docs`；过程记录落 `AI/AI-Logs`。
+
+示例里的 `affine.example.com` 和全零 `workspaceId` 都是占位符，不能直接拿来用。
 
 ## 自动 Handoff / 上下文守卫 / 会话续接（对齐套件 v1.8）
 

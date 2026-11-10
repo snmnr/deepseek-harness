@@ -1,9 +1,10 @@
 # mem0-dsh-bridge — 本地 --patch 挂载清单（开发期验证用）
 #
 # 用法（从 deepseek-harness 源码启动时）：
-#   pnpm dsh web --patch D:/Working/AIAssistantDev/deepseek-harness/Assistant/plugin/cordis.yml
+#   pnpm dsh web --patch <仓库路径>/Assistant/plugin/cordis.yml
 #
 # 注意：
+#   - 下面的路径都是占位符，用之前改成你自己的实际路径；一律用正斜杠。
 #   - 路径一律用正斜杠绝对路径（Windows 下 dsh/Git Bash 兼容）。
 #   - 正式安装走 install-dsh.ps1，patch 写入 ~/.dsh/profiles/<profile>/cordis.patch.yml，
 #     不依赖本文件；本文件仅用于开发验证。
@@ -12,8 +13,8 @@
 #     profile 树外会加载失败。
 - insert:
     - id: mem0-dsh-bridge
-      name: 'D:/Working/AIAssistantDev/deepseek-harness/Assistant/plugin/src/index.ts'
+      name: 'D:/path/to/deepseek-harness/Assistant/plugin/src/index.ts'
       config:
         python: 'python'
-        hooksScript: 'C:/Users/Jesse/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py'
-        dataDir: 'C:/Users/Jesse/.dsh/mem0'
+        hooksScript: 'C:/Users/your-name/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py'
+        dataDir: 'C:/Users/your-name/.dsh/mem0'

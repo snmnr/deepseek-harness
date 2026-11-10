@@ -20,13 +20,16 @@
     7. 引导：  agents-block.md 追加到 ~/.agents/AGENTS.md（marker 幂等）
 
 .PARAMETER KitDir
-  mem0-claude-kit 目录（只读）。默认 D:\Working\AIAssistantDev\mem0-2.2.0\mem0-claude-kit
+  mem0-claude-kit 目录（只读）。默认取环境变量 MEM0_KIT_DIR，否则用仓库上级的
+  mem0-2.2.0\mem0-claude-kit（与 deepseek-harness 同级）。
 
 .PARAMETER Profile
   dsh profile 名（patch 写入其目录）。默认 web
 
 .PARAMETER ApiUrl / ApiKey / UserId
   mem0 连接参数。ApiKey 只写入 .credentials.yaml，不进 patch 明文。
+  UserId 是长期记忆的归属标识：同一个 mem0 服务里，多台机器 / Claude CLI 与 dsh
+  用同一个 id 才会互相看到记忆。取一个自己稳定的值（如 me、你的名字），不要填别人的。
 
 .PARAMETER InstallDir
   运行时目录（默认 ~/.mem0-claude-dsh）。主要用于隔离测试。
@@ -36,11 +39,11 @@
 
 .EXAMPLE
   .\install-dsh.ps1 -DryRun
-  .\install-dsh.ps1 -ApiUrl https://mem0.example.com:4430 -ApiKey m0sk_xxx -UserId jesse
+  .\install-dsh.ps1 -ApiUrl https://mem0.example.com:4430 -ApiKey m0sk_xxx -UserId me
 #>
 [CmdletBinding()]
 param(
-    [string]$KitDir = 'D:\Working\AIAssistantDev\mem0-2.2.0\mem0-claude-kit',
+    [string]$KitDir = '',
     [string]$Profile = 'web',
     [string]$ApiUrl,
     [string]$ApiKey,
@@ -55,6 +58,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $AssistDir = Split-Path -Parent $PSCommandPath   # Assistant/ 目录
+
+# 套件目录不写死本机路径：优先 MEM0_KIT_DIR，否则按仓库布局取上级的
+# mem0-2.2.0\mem0-claude-kit（公开仓库里不暴露个人目录结构）。
+if (-not $KitDir) {
+    $KitDir = if ($env:MEM0_KIT_DIR) {
+        $env:MEM0_KIT_DIR
+    } else {
+        Join-Path (Split-Path -Parent (Split-Path -Parent $AssistDir)) 'mem0-2.2.0\mem0-claude-kit'
+    }
+}
 $Home2     = $env:USERPROFILE
 $DshHome      = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $Home2 '.dsh' }
 $AgentsHome   = if ($env:DSH_AGENTS_HOME) { $env:DSH_AGENTS_HOME } else { Join-Path $Home2 '.agents' }
@@ -134,8 +147,8 @@ if (-not $DryRun) {
     if (-not $ApiUrl)  { $ApiUrl  = Read-Host 'mem0 API 地址（如 https://mem0.example.com:4430）' }
     if (-not $ApiKey)  { $ApiKey  = Read-Host 'mem0 API Key（m0sk_...，输入不回显）' -AsSecureString
                           $ApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ApiKey)) }
-    if (-not $UserId)  { $UserId  = Read-Host 'mem0 user id（默认 jesse）'
-                          if (-not $UserId) { $UserId = 'jesse' } }
+    if (-not $UserId)  { $UserId  = Read-Host 'mem0 user id（默认 me；同一服务下用同一个 id 才能共享长期记忆，可填自己的名字）'
+                          if (-not $UserId) { $UserId = 'me' } }
 }
 
 # 占位符守卫：ApiUrl 会以 MEM0_API_URL 环境变量覆盖 ~/.dsh/mem0/config.json，

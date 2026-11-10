@@ -20,9 +20,12 @@ import crypto from 'node:crypto';
 const HOME = os.homedir();
 const MANIFEST_DIR = path.join(HOME, '.affine-docs', 'manifests');
 const INDEX_PATH = path.join(HOME, '.affine-docs', 'distill', 'index.json');
+// 默认值只是示例占位符；真实地址/workspace 请用环境变量或 ~/.affine-docs/config.json。
+//   AFFINE_MCP_URL      AFFiNE MCP 地址，例如 https://affine.example.com:4430/mcp
+//   AFFINE_WORKSPACE_ID AFFiNE 工作区 ID（不填会明确报错，不会误连示例地址）
 const CONFIG = {
-  mcpUrl: process.env.AFFINE_MCP_URL || 'https://affinemcp.shm.fun:4430/mcp',
-  workspaceId: process.env.AFFINE_WORKSPACE_ID || 'c98ccc82-d368-4a3c-ac2d-1cd6bab61b02',
+  mcpUrl: process.env.AFFINE_MCP_URL || 'https://affine.example.com:4430/mcp',
+  workspaceId: process.env.AFFINE_WORKSPACE_ID || '',
   tokenFile: process.env.AFFINE_TOKEN_FILE || path.join(HOME, '.secrets', 'affine_mcp_token.txt'),
 };
 
@@ -152,6 +155,9 @@ function nodeName(n) {
 }
 
 async function main() {
+  if (!CONFIG.workspaceId) {
+    throw new Error('缺少 AFFiNE workspaceId：请设 AFFINE_WORKSPACE_ID，或在 ~/.affine-docs/config.json 配置 workspaceId');
+  }
   const manifest = readJson(MANIFEST, {});
   if (!Object.keys(manifest).length) throw new Error(`清单为空或不存在：${MANIFEST}`);
   const planned = [];

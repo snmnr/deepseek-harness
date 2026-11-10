@@ -31,13 +31,19 @@ function readJsonSafe(p) {
   // 去掉 BOM：手工编辑过的 JSON 常带 BOM，JSON.parse 会抛错并静默返回 {}
   try { return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, '')); } catch { return {}; }
 }
-// 优先级：环境变量 > ~/.affine-docs/config.json > 内置默认值
+// 优先级：环境变量 > ~/.affine-docs/config.json > 内置默认值。
+// 默认地址/工作区是示例占位符，真实值请写入：
+//   ~/.affine-docs/config.json
+//   { "mcpUrl": "https://affine.example.com:4430/mcp",
+//     "webBase": "https://affine.example.com:4430",
+//     "workspaceId": "<你的 AFFiNE 工作区 ID>",
+//     "tokenFile": "C:/Users/<you>/.secrets/affine_mcp_token.txt" }
 const FILE_CFG = readJsonSafe(path.join(STATE_DIR, 'config.json'));
 const CONFIG = {
-  mcpUrl: process.env.AFFINE_MCP_URL || FILE_CFG.mcpUrl || 'https://affinemcp.shm.fun:4430/mcp',
+  mcpUrl: process.env.AFFINE_MCP_URL || FILE_CFG.mcpUrl || 'https://affine.example.com:4430/mcp',
   tokenFile: process.env.AFFINE_TOKEN_FILE || FILE_CFG.tokenFile || path.join(os.homedir(), '.secrets', 'affine_mcp_token.txt'),
-  workspaceId: process.env.AFFINE_WORKSPACE_ID || FILE_CFG.workspaceId || 'c98ccc82-d368-4a3c-ac2d-1cd6bab61b02',
-  webBase: process.env.AFFINE_WEB_BASE || FILE_CFG.webBase || 'https://wiki.shm.fun:4430',
+  workspaceId: process.env.AFFINE_WORKSPACE_ID || FILE_CFG.workspaceId || '',
+  webBase: process.env.AFFINE_WEB_BASE || FILE_CFG.webBase || 'https://affine.example.com:4430',
   rootFolder: process.env.AFFINE_ROOT_FOLDER || FILE_CFG.rootFolder || 'AI/AI-Docs',
   stateDir: STATE_DIR,
   maxFileBytes: 512 * 1024,
