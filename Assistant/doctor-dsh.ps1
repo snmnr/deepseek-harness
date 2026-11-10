@@ -195,6 +195,11 @@ $webLog = Get-ChildItem (Join-Path $InstallDir 'logs') -Filter 'dsh-web-*.log' -
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($webLog) {
     Write-Host "  文件：$($webLog.FullName)"
+    $urlLine = Select-String -Path $webLog.FullName -Pattern 'dsh web: (http\S+)' -ErrorAction SilentlyContinue | Select-Object -Last 1
+    if ($urlLine -and $urlLine.Matches.Count -gt 0) {
+        Write-Host "  当前进程的页面地址（请用这个地址发消息）：" -ForegroundColor Yellow
+        Write-Host "    $($urlLine.Matches[0].Groups[1].Value)"
+    }
     $webHits = Select-String -Path $webLog.FullName -Pattern 'mem0-dsh-bridge|spawn failed|stderr|user-prompt|ui-status|timed out' -ErrorAction SilentlyContinue |
         Select-Object -Last 12
     if ($webHits) {
