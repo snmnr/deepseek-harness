@@ -190,6 +190,22 @@ foreach ($logFile in $recentLogs) {
 }
 if (-not $foundBridgeLog) { Write-Host '  INFO  近期日志里没有 mem0-dsh-bridge / failed to import 记录' }
 
+Section 'start-dsh 运行日志里的 bridge 记录'
+$webLog = Get-ChildItem (Join-Path $InstallDir 'logs') -Filter 'dsh-web-*.log' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($webLog) {
+    Write-Host "  文件：$($webLog.FullName)"
+    $webHits = Select-String -Path $webLog.FullName -Pattern 'mem0-dsh-bridge|spawn failed|stderr|user-prompt|ui-status|timed out' -ErrorAction SilentlyContinue |
+        Select-Object -Last 12
+    if ($webHits) {
+        $webHits | ForEach-Object { Write-Host ("    " + $_.Line.Trim()) }
+    } else {
+        Write-Host '  INFO  运行日志里没有 bridge 相关行（正常启动通常也没有）'
+    }
+} else {
+    Write-Host '  INFO  还没有 dsh-web-*.log（不是通过 start-dsh.ps1 启动的）'
+}
+
 if ($Deep -and (Test-Path $hooks)) {
     Section 'mem0 doctor（会访问服务端）'
     & python $hooks doctor
