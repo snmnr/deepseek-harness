@@ -75,6 +75,14 @@ Assistant/
 > 不会整目录复制。
 > 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
 >
+> **启动报 `startup failed: required plugin did not activate`、`typert ... not found`
+> 或 `client bundle not found`**：仓库没有构建产物（或 `node_modules` 不完整）。启动器会
+> 自动检测并执行 `pnpm install` / `pnpm run build`；也可以手动：
+> `pnpm install` 然后 `pnpm run build`（首次 5~15 分钟），完成后重启 `start-dsh.ps1`。
+> 构建产物路径可用于自检：`packages\api\gateway\lib\client.browser.js`、
+> `packages\bundle\base\node_modules\@deepseek-ai\dsh-commands\lib\typert.host.js`、
+> `apps\cli\node_modules\@deepseek-ai\schemastery\lib\index.cjs`。
+>
 > **设备上没有套件源码目录时**（例如只装了 Claude kit）：默认路径会找不到
 > `payload\mem0_hooks.py`，用 `-KitDir "$env:USERPROFILE\.mem0-claude"`（或设
 > `MEM0_KIT_DIR`）指向已安装目录。

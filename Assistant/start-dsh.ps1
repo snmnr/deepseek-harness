@@ -142,14 +142,17 @@ Add-ToProcessPath (Split-Path -Parent $pnpmPath)
 $pnpmVersion = (& $pnpmPath --version 2>$null | Select-Object -First 1)
 Write-Step "pnpm $pnpmVersion"
 
-# ---------- 4. 依赖（缺失时自动安装） ----------
+# ---------- 4. 依赖（缺失或不完整时自动安装） ----------
 $nodeModules = Join-Path $RepoRoot 'node_modules'
-$needInstall = $Install -or (-not (Test-Path $nodeModules))
+# 只判断 node_modules 是否存在不够：半装/复制来的目录会缺 pnpm 链接，
+# 启动时报 Cannot find module .../schemastery/lib/index.cjs。
+$depsMarker = Join-Path $RepoRoot 'apps\cli\node_modules\@deepseek-ai\schemastery\lib\index.cjs'
+$needInstall = $Install -or (-not (Test-Path $nodeModules)) -or (-not (Test-Path $depsMarker))
 if ($needInstall) {
-    if ($NoBootstrap -and -not (Test-Path $nodeModules)) {
-        Stop-WithError '缺少 node_modules（已指定 -NoBootstrap）。请先运行 pnpm install。'
+    if ($NoBootstrap -and ((-not (Test-Path $nodeModules)) -or (-not (Test-Path $depsMarker)))) {
+        Stop-WithError '依赖缺失或不完整（已指定 -NoBootstrap）。请先运行 pnpm install。'
     }
-    Write-Step '执行 pnpm install（首次较慢，可能几分钟）...'
+    Write-Step '执行 pnpm install（补齐依赖；首次较慢，可能几分钟）...'
     Push-Location $RepoRoot
     try {
         & $pnpmPath install
@@ -158,6 +161,9 @@ if ($needInstall) {
         Pop-Location
     }
     if ($installCode -ne 0) { Stop-WithError "pnpm install 失败（exit $installCode）。" }
+    if (-not (Test-Path $depsMarker)) {
+        Stop-WithError "pnpm install 后仍缺少 $depsMarker"
+    }
 }
 
 # ---------- 4b. dsh 构建产物 ----------
@@ -165,7 +171,10 @@ if ($needInstall) {
 # "client bundle not found" / "Cannot find module .../lib/typert.host.js"。
 $buildMarkers = @(
     (Join-Path $RepoRoot 'packages\api\gateway\lib\client.browser.js'),
-    (Join-Path $RepoRoot 'packages\typert\loader\lib')
+    (Join-Path $RepoRoot 'packages\typert\loader\lib'),
+    (Join-Path $RepoRoot 'packages\boot\app-boot\lib'),
+    (Join-Path $RepoRoot 'packages\bundle\base\node_modules\@deepseek-ai\dsh-commands\lib\typert.host.js'),
+    (Join-Path $RepoRoot 'apps\cli\node_modules\@deepseek-ai\dsh-goal\lib\typert.host.js')
 )
 $missingMarkers = @($buildMarkers | Where-Object { -not (Test-Path $_) })
 if ($Build -or $missingMarkers.Count -gt 0) {
