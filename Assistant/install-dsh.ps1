@@ -37,9 +37,14 @@
 .PARAMETER DryRun
   只打印计划，不写任何文件。
 
+.PARAMETER ReuseClaudeConfig
+  参数和环境变量都没提供时，从 ~/.claude/mem0/config.json 复用 mem0 连接参数
+  （已有 Claude kit 的机器可少填一遍）。
+
 .EXAMPLE
   .\install-dsh.ps1 -DryRun
   .\install-dsh.ps1 -ApiUrl https://mem0.example.com:4430 -ApiKey m0sk_xxx -UserId me
+  .\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig
 #>
 [CmdletBinding()]
 param(
@@ -53,6 +58,9 @@ param(
     [string]$ReportToken,
     [string]$MachineId,
     [string]$InstallDir = (Join-Path $env:USERPROFILE '.mem0-claude-dsh'),
+    # 复用本机 Claude kit 的连接配置（~/.claude/mem0/config.json），
+    # 仅在参数和环境变量都没提供时生效。
+    [switch]$ReuseClaudeConfig,
     [switch]$DryRun
 )
 
@@ -67,6 +75,18 @@ if (-not $KitDir) {
     } else {
         Join-Path (Split-Path -Parent (Split-Path -Parent $AssistDir)) 'mem0-2.2.0\mem0-claude-kit'
     }
+}
+# 套件目录支持两种布局：
+#   1) 套件源码目录：<KitDir>\payload\mem0_hooks.py + payload\mem0-mcp
+#   2) Claude kit 安装目录（如 ~/.mem0-claude）：mem0_hooks.py + mcp\
+$KitPayload = Join-Path $KitDir 'payload'
+if (-not (Test-Path (Join-Path $KitPayload 'mem0_hooks.py'))) {
+    if (Test-Path (Join-Path $KitDir 'mem0_hooks.py')) { $KitPayload = $KitDir }
+}
+$KitMcp = Join-Path $KitPayload 'mem0-mcp'
+if (-not (Test-Path $KitMcp)) {
+    $installedMcp = Join-Path $KitPayload 'mcp'
+    if (Test-Path $installedMcp) { $KitMcp = $installedMcp }
 }
 $Home2     = $env:USERPROFILE
 $DshHome      = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $Home2 '.dsh' }
@@ -103,8 +123,8 @@ if ($KitVersion) { Write-Host "   套件版本: $KitVersion" }
 if ($DryRun) { Write-Host '（DryRun 模式：不写任何文件）' -ForegroundColor Yellow }
 
 foreach ($req in @(
-    @{ p = (Join-Path $KitDir 'payload\mem0_hooks.py'); n = '套件 mem0_hooks.py' },
-    @{ p = (Join-Path $KitDir 'payload\mem0-mcp');      n = '套件 mem0-mcp' },
+    @{ p = (Join-Path $KitPayload 'mem0_hooks.py'); n = '套件 mem0_hooks.py' },
+    @{ p = $KitMcp;                                n = '套件 mem0-mcp' },
     @{ p = (Join-Path $AssistDir 'hooks\mem0_hooks_dsh.py'); n = '包装层 mem0_hooks_dsh.py' },
     @{ p = (Join-Path $AssistDir 'plugin\src\index.ts');     n = 'bridge 插件 index.ts' }
 )) {
@@ -142,6 +162,27 @@ Write-Host "   Python: $py"
 $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
 if (-not $uv) { Write-Warning '未找到 uv；mem0-mcp venv 预建将跳过（首次启动会自动 sync，较慢）' }
 
+# 已有环境变量 / Claude kit 配置时直接用，不再交互询问。
+# 优先级：显式参数 > 环境变量 > （-ReuseClaudeConfig）~/.claude/mem0/config.json。
+$ClaudeCfg = $null
+if ($ReuseClaudeConfig) {
+    $claudeCfgPath = Join-Path $Home2 '.claude\mem0\config.json'
+    if (Test-Path $claudeCfgPath) {
+        try { $ClaudeCfg = Get-Content $claudeCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $ClaudeCfg = $null }
+    }
+    if ($ClaudeCfg) {
+        Write-Host '   连接参数：缺失项复用 ~/.claude/mem0/config.json'
+    } else {
+        Write-Warning "未找到可解析的 $claudeCfgPath，继续按参数/环境变量处理"
+    }
+}
+if (-not $ApiUrl)      { $ApiUrl      = if ($env:MEM0_API_URL) { $env:MEM0_API_URL } elseif ($ClaudeCfg) { $ClaudeCfg.api_url } else { $null } }
+if (-not $ApiKey)      { $ApiKey      = if ($env:MEM0_API_KEY) { $env:MEM0_API_KEY } elseif ($ClaudeCfg) { $ClaudeCfg.api_key } else { $null } }
+if (-not $UserId)      { $UserId      = if ($env:MEM0_DEFAULT_USER_ID) { $env:MEM0_DEFAULT_USER_ID } elseif ($ClaudeCfg) { $ClaudeCfg.user_id } else { $null } }
+if (-not $ReportUrl)   { $ReportUrl   = if ($env:MEM0_REPORT_URL) { $env:MEM0_REPORT_URL } elseif ($ClaudeCfg) { $ClaudeCfg.report_url } else { $null } }
+if (-not $ReportToken) { $ReportToken = if ($env:MEM0_REPORT_TOKEN) { $env:MEM0_REPORT_TOKEN } elseif ($ClaudeCfg) { $ClaudeCfg.report_token } else { $null } }
+if (-not $MachineId)   { $MachineId   = if ($env:MEM0_MACHINE_ID) { $env:MEM0_MACHINE_ID } elseif ($ClaudeCfg) { $ClaudeCfg.machine_id } else { $null } }
+
 # 交互收集缺失参数（DryRun 时不询问）
 if (-not $DryRun) {
     if (-not $ApiUrl)  { $ApiUrl  = Read-Host 'mem0 API 地址（如 https://mem0.example.com:4430）' }
@@ -161,7 +202,7 @@ if ($ApiUrl -match 'example\.(com|org)') {
 Write-Plan "1. 复制套件 mem0_hooks.py + VERSION → $InstallDir\original"
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force (Join-Path $InstallDir 'original') | Out-Null
-    Copy-Item (Join-Path $KitDir 'payload\mem0_hooks.py') (Join-Path $InstallDir 'original\mem0_hooks.py') -Force
+    Copy-Item (Join-Path $KitPayload 'mem0_hooks.py') (Join-Path $InstallDir 'original\mem0_hooks.py') -Force
     # doctor 的「版本」检查与「已安装的 mem0_hooks.py 来自 kit x.y.z」需要它
     if (Test-Path (Join-Path $KitDir 'VERSION')) {
         Copy-Item (Join-Path $KitDir 'VERSION') (Join-Path $InstallDir 'original\VERSION') -Force
@@ -171,7 +212,7 @@ if (-not $DryRun) {
 Write-Plan "2. 复制 mem0-mcp 源码 → $InstallDir\mcp"
 if (-not $DryRun) {
     if (Test-Path (Join-Path $InstallDir 'mcp')) { Remove-Item -Recurse -Force (Join-Path $InstallDir 'mcp') }
-    Copy-Item (Join-Path $KitDir 'payload\mem0-mcp') (Join-Path $InstallDir 'mcp') -Recurse -Force
+    Copy-Item $KitMcp (Join-Path $InstallDir 'mcp') -Recurse -Force
     if ($uv) {
         Push-Location (Join-Path $InstallDir 'mcp')
         try { & $uv sync --quiet; Write-Host '   uv sync 完成' } finally { Pop-Location }

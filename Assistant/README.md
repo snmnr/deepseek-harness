@@ -72,6 +72,39 @@ Assistant/
 > Claude CLI 与 dsh 用同一个 id 才会互相看到记忆；取一个自己稳定的值即可
 > （如 `me`、你的名字），不要填别人的 id。
 
+### 已有 Claude kit 的机器（复用连接参数）
+
+如果这台机器已经装过 Claude kit，可以把安装目录直接当套件源，并复用它的连接参数：
+
+```powershell
+.\Assistant\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig
+```
+
+参数来源优先级：
+
+1. 命令行参数（`-ApiUrl/-ApiKey/-UserId/-Report*`）；
+2. 环境变量：`MEM0_API_URL`、`MEM0_API_KEY`、`MEM0_DEFAULT_USER_ID`、
+   `MEM0_REPORT_URL`、`MEM0_REPORT_TOKEN`、`MEM0_MACHINE_ID`；
+3. `-ReuseClaudeConfig` 时读 `~/.claude/mem0/config.json`；
+4. 都没有才交互询问。
+
+例如环境变量已经配好，直接运行安装器就不会再提示：
+
+```powershell
+$env:MEM0_API_URL = 'https://mem0.<你的域名>:4430'
+$env:MEM0_API_KEY = 'm0sk_xxx'
+$env:MEM0_DEFAULT_USER_ID = 'me'
+.\Assistant\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude"
+```
+
+> 数据仍然隔离：dsh 用 `~/.dsh/mem0` 和 `~/.mem0-claude-dsh`，不会写 Claude 的
+> `~/.claude/mem0`。只有「同一个 mem0 服务 + 同一个 user_id」时长期记忆才互通。
+> AFFiNE 工具直接读 `AFFINE_MCP_URL`、`AFFINE_WEB_BASE`、`AFFINE_WORKSPACE_ID`、
+> `AFFINE_TOKEN_FILE`，与 Claude 侧共用同一套环境变量即可。
+>
+> 用安装目录当套件源时，版本以该目录的 `VERSION` 为准（可能比开发目录旧）；
+> 想用最新版仍应指向套件源码目录。
+
 安装动作（全部幂等）：
 
 1. 套件运行时**只读复制**到 `~/.mem0-claude-dsh/`（original/ 含 `mem0_hooks.py` + `VERSION`；

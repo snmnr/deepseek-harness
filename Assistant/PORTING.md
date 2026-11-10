@@ -27,6 +27,8 @@
      （dsh 用真实 token 与事件，不读 transcript）。
    - `tools/*.mjs` 新版：同步后**重新套用隐私占位处理**（见第 3 节）。
 4. 跑 `install-dsh.ps1` 更新运行时，然后执行第 4 节验证。
+   其他机器只有 Claude kit 安装目录时，可 `-KitDir "$env:USERPROFILE\.mem0-claude"`
+   （安装器会自动识别 `payload/` 与 `mcp/` 两种布局）。
 5. 提交前跑第 3.6 节的隐私扫描；提交邮箱必须是 GitHub noreply。
 
 ## 3. 隐私处理（强制）
