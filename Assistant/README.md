@@ -28,7 +28,8 @@ dsh 自带的 Claude Code hooks 桥（`packages/experimental/hooks-claude-code`�
 
 ```
 Assistant/
-├─ install-dsh.ps1 / uninstall-dsh.ps1   # 安装/卸载（幂等、-DryRun、-PurgeData）
+├─ install-dsh.ps1 / install-dsh.cmd     # 安装（幂等、-DryRun）
+├─ uninstall-dsh.ps1                     # 卸载（-DryRun、-PurgeData）
 ├─ start-dsh.ps1 / start-dsh.cmd         # 一键启动（环境检测 + 自动补齐 + 日志）
 ├─ README.md                             # 本文件
 ├─ PORTING.md                            # 套件同步流程 + 强制隐私约定
@@ -62,7 +63,15 @@ Assistant/
   -ApiUrl https://mem0.<你的域名>:4430 `
   -ApiKey m0sk_xxx `
   -UserId me
+
+# 如果 PowerShell 执行策略禁止 .ps1，用 cmd 包装（内部已带 -ExecutionPolicy Bypass）
+.\Assistant\install-dsh.cmd -DryRun
 ```
+
+> 安装步骤 2 会复制 mem0-mcp 并执行 `uv sync`，首次可能 1~3 分钟且没有进度输出。
+> 卡在 `开始 uv sync` 时是网络/包解析慢，可用 `-SkipUvSync` 跳过（首次启动 dsh
+> 时会自动同步）；已安装 Claude kit 的 `.venv` 会被跳过，不会整目录复制。
+> 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
 
 > **ApiUrl 必须填真实地址。** 它会以 `MEM0_API_URL` 环境变量注入 hook 子进程，
 > 优先级高于 `~/.dsh/mem0/config.json`；残留 `example.com` 占位符时，召回与落盘
@@ -78,6 +87,9 @@ Assistant/
 
 ```powershell
 .\Assistant\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig
+
+# 如果卡在 uv sync（首次装包慢）或执行策略限制：
+.\Assistant\install-dsh.cmd -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig -SkipUvSync
 ```
 
 参数来源优先级：

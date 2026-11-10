@@ -41,6 +41,12 @@
   参数和环境变量都没提供时，从 ~/.claude/mem0/config.json 复用 mem0 连接参数
   （已有 Claude kit 的机器可少填一遍）。
 
+.PARAMETER SkipUvSync
+  跳过 mem0-mcp 的 uv sync。首次启动 dsh 时会自动同步，只是更慢。
+
+.PARAMETER NonInteractive
+  缺连接参数时直接报错，不进入交互询问。
+
 .EXAMPLE
   .\install-dsh.ps1 -DryRun
   .\install-dsh.ps1 -ApiUrl https://mem0.example.com:4430 -ApiKey m0sk_xxx -UserId me
@@ -61,6 +67,10 @@ param(
     # 复用本机 Claude kit 的连接配置（~/.claude/mem0/config.json），
     # 仅在参数和环境变量都没提供时生效。
     [switch]$ReuseClaudeConfig,
+    # 跳过 mem0-mcp 的 uv sync（首次启动 dsh 时会自动同步，较慢）
+    [switch]$SkipUvSync,
+    # 缺参数时直接报错，不进入 Read-Host（适合脚本/远程执行）
+    [switch]$NonInteractive,
     [switch]$DryRun
 )
 
@@ -183,6 +193,19 @@ if (-not $ReportUrl)   { $ReportUrl   = if ($env:MEM0_REPORT_URL) { $env:MEM0_RE
 if (-not $ReportToken) { $ReportToken = if ($env:MEM0_REPORT_TOKEN) { $env:MEM0_REPORT_TOKEN } elseif ($ClaudeCfg) { $ClaudeCfg.report_token } else { $null } }
 if (-not $MachineId)   { $MachineId   = if ($env:MEM0_MACHINE_ID) { $env:MEM0_MACHINE_ID } elseif ($ClaudeCfg) { $ClaudeCfg.machine_id } else { $null } }
 
+# 只报告“有没有/从哪里来”，不打印任何值；卡住时能看出是在等输入还是别处。
+$apiKeyState = if ($ApiKey) { "已提供（$($ApiKey.Length) 字符）" } else { '缺失' }
+$userIdState = if ($UserId) { $UserId } else { '缺失' }
+$apiUrlState = if ($ApiUrl) { '已提供' } else { '缺失' }
+Write-Host "   连接参数: ApiUrl=$apiUrlState / ApiKey=$apiKeyState / UserId=$userIdState"
+
+if ($NonInteractive -and -not $DryRun) {
+    if (-not $UserId) { $UserId = 'me' }
+    if (-not $ApiUrl -or -not $ApiKey) {
+        throw '缺少 ApiUrl/ApiKey（-NonInteractive）：请用参数或 MEM0_* 环境变量提供'
+    }
+}
+
 # 交互收集缺失参数（DryRun 时不询问）
 if (-not $DryRun) {
     if (-not $ApiUrl)  { $ApiUrl  = Read-Host 'mem0 API 地址（如 https://mem0.example.com:4430）' }
@@ -211,11 +234,31 @@ if (-not $DryRun) {
 
 Write-Plan "2. 复制 mem0-mcp 源码 → $InstallDir\mcp"
 if (-not $DryRun) {
-    if (Test-Path (Join-Path $InstallDir 'mcp')) { Remove-Item -Recurse -Force (Join-Path $InstallDir 'mcp') }
-    Copy-Item $KitMcp (Join-Path $InstallDir 'mcp') -Recurse -Force
-    if ($uv) {
-        Push-Location (Join-Path $InstallDir 'mcp')
-        try { & $uv sync --quiet; Write-Host '   uv sync 完成' } finally { Pop-Location }
+    $mcpDest = Join-Path $InstallDir 'mcp'
+    if (Test-Path $mcpDest) { Remove-Item -Recurse -Force $mcpDest }
+    New-Item -ItemType Directory -Force $mcpDest | Out-Null
+    # 已安装 Claude kit 的 mcp/ 里常带 .venv：venv 内是绝对路径，复制过去也不能用，
+    # 文件又很多（卡住的主因之一）。跳过它，由下面的 uv sync 重建。
+    if (Test-Path (Join-Path $KitMcp '.venv')) {
+        Write-Host '   跳过套件自带 .venv（目标环境重新 uv sync）'
+    }
+    Write-Host '   复制 mem0-mcp 源码...'
+    Get-ChildItem -LiteralPath $KitMcp -Force | Where-Object { $_.Name -ne '.venv' } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $mcpDest -Recurse -Force
+    }
+    if ($SkipUvSync) {
+        Write-Host '   已跳过 uv sync（-SkipUvSync）：首次启动 dsh 时会自动同步'
+    } elseif ($uv) {
+        Write-Host '   开始 uv sync（首次可能 1~3 分钟，静默；可加 -SkipUvSync 跳过）...'
+        Push-Location $mcpDest
+        try {
+            & $uv sync --quiet
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "uv sync 失败（exit $LASTEXITCODE）；首次启动 dsh 时会重试"
+            } else {
+                Write-Host '   uv sync 完成'
+            }
+        } finally { Pop-Location }
     }
 }
 
