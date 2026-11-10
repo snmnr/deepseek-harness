@@ -38,8 +38,10 @@
   只打印计划，不写任何文件。
 
 .PARAMETER ReuseClaudeConfig
-  参数和环境变量都没提供时，从 ~/.claude/mem0/config.json 复用 mem0 连接参数
-  （已有 Claude kit 的机器可少填一遍）。
+  兼容旧命令；现在默认就会读取 ~/.claude/mem0/config.json 的缺失项。
+
+.PARAMETER NoReuseClaudeConfig
+  不读取 Claude kit 的配置，强制使用参数/环境变量/交互输入。
 
 .PARAMETER SkipUvSync
   跳过 mem0-mcp 的 uv sync。首次启动 dsh 时会自动同步，只是更慢。
@@ -69,9 +71,11 @@ param(
     [string]$ReportToken,
     [string]$MachineId,
     [string]$InstallDir = (Join-Path $env:USERPROFILE '.mem0-claude-dsh'),
-    # 复用本机 Claude kit 的连接配置（~/.claude/mem0/config.json），
-    # 仅在参数和环境变量都没提供时生效。
+    # 旧行为：显式要求复用 Claude kit 配置；现在默认自动复用，
+    # 保留该开关以兼容旧命令。
     [switch]$ReuseClaudeConfig,
+    # 明确禁止读取 ~/.claude/mem0/config.json（需要 dsh 独立配置时）
+    [switch]$NoReuseClaudeConfig,
     # 跳过 mem0-mcp 的 uv sync（首次启动 dsh 时会自动同步，较慢）
     [switch]$SkipUvSync,
     # 缺参数时直接报错，不进入 Read-Host（适合脚本/远程执行）
@@ -147,6 +151,7 @@ function Write-Utf8NoBom { param([string]$Path, [string]$Text)
 # ---------- 前置检查 ----------
 Write-Host '== mem0-claude-kit → dsh 安装 ==' -ForegroundColor Green
 if ($KitVersion) { Write-Host "   套件版本: $KitVersion" }
+Write-Host "   套件源: $KitDir"
 if ($DryRun) { Write-Host '（DryRun 模式：不写任何文件）' -ForegroundColor Yellow }
 
 foreach ($req in @(
@@ -195,17 +200,19 @@ $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
 if (-not $uv) { Write-Warning '未找到 uv；mem0-mcp venv 预建将跳过（首次启动会自动 sync，较慢）' }
 
 # 已有环境变量 / Claude kit 配置时直接用，不再交互询问。
-# 优先级：显式参数 > 环境变量 > （-ReuseClaudeConfig）~/.claude/mem0/config.json。
+# 优先级：显式参数 > 环境变量 > ~/.claude/mem0/config.json（默认自动读，-NoReuseClaudeConfig 关闭）。
 $ClaudeCfg = $null
-if ($ReuseClaudeConfig) {
-    $claudeCfgPath = Join-Path $Home2 '.claude\mem0\config.json'
+$claudeCfgPath = Join-Path $Home2 '.claude\mem0\config.json'
+if (-not $NoReuseClaudeConfig) {
     if (Test-Path $claudeCfgPath) {
         try { $ClaudeCfg = Get-Content $claudeCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $ClaudeCfg = $null }
     }
     if ($ClaudeCfg) {
-        Write-Host '   连接参数：缺失项复用 ~/.claude/mem0/config.json'
-    } else {
-        Write-Warning "未找到可解析的 $claudeCfgPath，继续按参数/环境变量处理"
+        Write-Host "   连接参数：缺失项自动复用 $claudeCfgPath"
+    } elseif ($ReuseClaudeConfig) {
+        Write-Warning "未找到可解析的 $claudeCfgPath"
+    } elseif (-not $ApiUrl -and -not $env:MEM0_API_URL) {
+        Write-Host "   未找到 $claudeCfgPath，将询问连接参数（或先配 MEM0_* 环境变量）"
     }
 }
 if (-not $ApiUrl)      { $ApiUrl      = if ($env:MEM0_API_URL) { $env:MEM0_API_URL } elseif ($ClaudeCfg) { $ClaudeCfg.api_url } else { $null } }

@@ -103,21 +103,23 @@ Assistant/
 
 ### 已有 Claude kit 的机器（复用连接参数）
 
-如果这台机器已经装过 Claude kit，可以把安装目录直接当套件源，并复用它的连接参数：
+如果这台机器已经装过 Claude kit，**不传参数也能直接安装**：
 
 ```powershell
-.\Assistant\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig
-
-# 如果卡在 uv sync（首次装包慢）或执行策略限制：
-.\Assistant\install-dsh.cmd -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig -SkipUvSync
+.\Assistant\install-dsh.cmd
 ```
+
+安装器会自动：
+
+1. 按 `MEM0_KIT_DIR` → 上级 `mem0-2.2.0\mem0-claude-kit` → `~/.mem0-claude` 找套件；
+2. 从 `~/.claude/mem0/config.json` 读取缺失的 `api_url/api_key/user_id`。
 
 参数来源优先级：
 
 1. 命令行参数（`-ApiUrl/-ApiKey/-UserId/-Report*`）；
 2. 环境变量：`MEM0_API_URL`、`MEM0_API_KEY`、`MEM0_DEFAULT_USER_ID`、
    `MEM0_REPORT_URL`、`MEM0_REPORT_TOKEN`、`MEM0_MACHINE_ID`；
-3. `-ReuseClaudeConfig` 时读 `~/.claude/mem0/config.json`；
+3. 默认自动读 `~/.claude/mem0/config.json`（用 `-NoReuseClaudeConfig` 关闭）；
 4. 都没有才交互询问。
 
 例如环境变量已经配好，直接运行安装器就不会再提示：
