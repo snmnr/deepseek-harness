@@ -191,6 +191,20 @@ $env:MEM0_DEFAULT_USER_ID = 'me'
 - 日志写到 `~/.mem0-claude-dsh/logs/dsh-web-<时间>.log`；
 - mem0 桥未安装时只告警（网页仍可启动）：先跑 `install-dsh.ps1`。
 
+## 诊断（mem0 面板灰 / 没有记忆）
+
+```powershell
+.\Assistant\doctor-dsh.ps1        # 只读；加 -Deep 会额外调用 mem0 doctor
+```
+
+检查构建产物、依赖完整性、profile 挂载、bridge 激活心跳
+（`~/.dsh/mem0/bridge-alive.json`）、buffer、状态文件、3080 进程和最新启动日志。
+
+> **更新了 `Assistant/plugin` 后必须重跑 `install-dsh.ps1`**：profile 里是插件副本，
+> 不是符号链接；只 `git pull` + 重启不会加载新插件代码。
+> 插件一激活就会写 `~/.dsh/mem0/bridge-alive.json`；没有心跳说明插件没加载，
+> 有心跳但没有 buffer 说明还没有会话事件。
+
 ## 卸载
 
 ```powershell

@@ -12,6 +12,31 @@ import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { basePayload, captureHookStdout, type BridgeConfig } from './capture.ts'
 
+/**
+ * Write a small heartbeat file as soon as the bridge plugin is activated and on
+ * every session/turn boundary. The UI reads the workspace status file; this
+ * heartbeat answers a different question for `doctor-dsh.ps1`: is the host
+ * plugin loaded at all? A stale/missing heartbeat means the bridge did not
+ * activate (build/import failure), while a fresh heartbeat with no buffers
+ * means it loaded but the session has not produced events yet.
+ */
+export async function writeBridgeHeartbeat(config: BridgeConfig): Promise<void> {
+  try {
+    await mkdir(config.dataDir, { recursive: true })
+    const payload = {
+      at: new Date().toISOString(),
+      pid: process.pid,
+      node: process.version,
+      cwd: process.cwd(),
+      dataDir: config.dataDir,
+      hooksScript: config.hooksScript,
+    }
+    await writeFile(join(config.dataDir, 'bridge-alive.json'), JSON.stringify(payload, null, 2), 'utf8')
+  } catch {
+    // Diagnostics only; never affect the session.
+  }
+}
+
 /** Bridge-computed extras folded into the status file beside the ui-status payload. */
 export interface UiStatusExtra {
   /** Total tokens recorded by the checkpoint ring buffer this session. */

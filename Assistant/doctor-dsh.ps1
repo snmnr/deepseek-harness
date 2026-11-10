@@ -67,6 +67,26 @@ if (Test-Path $patch) {
 $pluginEntry = Join-Path $DshHome 'profiles\web\plugins\mem0-dsh-bridge\src\index.ts'
 if (Test-Path $pluginEntry) { Ok "bridge 插件：$pluginEntry" } else { Fail "bridge 插件未安装：$pluginEntry" }
 
+Section 'bridge 激活心跳'
+$heartbeat = Join-Path $DshHome 'mem0\bridge-alive.json'
+if (Test-Path $heartbeat) {
+    try {
+        $hb = Get-Content $heartbeat -Raw -Encoding UTF8 | ConvertFrom-Json
+        $hbAt = [datetime]$hb.at
+        $ageMin = [int]((Get-Date).ToUniversalTime() - $hbAt.ToUniversalTime()).TotalMinutes
+        Ok "bridge 已激活：PID $($hb.pid)，心跳 $($hb.at)（$ageMin 分钟前）"
+        if ($dshRunning -and $ageMin -gt 10) {
+            Warn "心跳已 $ageMin 分钟未更新：bridge 可能卡住或进程已停止响应"
+        }
+    } catch {
+        Warn "bridge-alive.json 无法解析：$heartbeat"
+    }
+} elseif ($dshRunning) {
+    Warn '没有 bridge-alive.json：mem0-dsh-bridge 未激活（看启动日志的 failed to import）'
+} else {
+    Write-Host '  INFO  dsh 未运行，尚无心跳属正常'
+}
+
 Section '会话数据与状态文件'
 $buffers = @(Get-ChildItem (Join-Path $DshHome 'mem0') -Filter 'buffer_*.json' -ErrorAction SilentlyContinue)
 if ($buffers.Count -gt 0) {

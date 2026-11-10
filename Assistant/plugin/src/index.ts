@@ -49,7 +49,7 @@ import {
   writeCheckpoint,
 } from './checkpoint.ts'
 import { ExportBuffer, writeExport } from './export.ts'
-import { writeStatusFile, type UiStatusExtra } from './status.ts'
+import { writeStatusFile, writeBridgeHeartbeat, type UiStatusExtra } from './status.ts'
 
 export const name = 'mem0-dsh-bridge'
 
@@ -127,6 +127,10 @@ export function apply(ctx: Context, config: Config): void {
   }
   const log = (msg: string): void => ctx.logger.warn(msg)
   const states = new Map<string, SessionState>()
+  // Activation proof for doctor-dsh.ps1: the UI status file only exists after a
+  // session event, so a missing status cannot distinguish "no session yet" from
+  // "plugin failed to import".
+  void writeBridgeHeartbeat(resolved)
 
   function stateFor(agent: Agent): SessionState {
     const sid = String(agent.session.header.id)
@@ -197,6 +201,7 @@ export function apply(ctx: Context, config: Config): void {
     fireHookCommand(resolved, 'session-start', payload, log)
     // Seed the UI status file so the right-panel tab has data immediately.
     void writeStatusFile(st.cwd, String(header.id), resolved, log)
+    void writeBridgeHeartbeat(resolved)
   })
 
   // --- UserPromptSubmit → agent/pre-step: capture prompt + recall on first prompt ---
@@ -344,6 +349,7 @@ export function apply(ctx: Context, config: Config): void {
       contextTokens,
       guardLevel: guardLevel(contextTokens, window) ?? null,
     })
+    void writeBridgeHeartbeat(resolved)
   })
 
   // --- SessionEnd + distill export → agent/disposed (emit) ---
