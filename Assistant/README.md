@@ -75,6 +75,12 @@ Assistant/
 > 不会整目录复制。
 > 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
 >
+> **面板灰、`bridge-alive.json` 有心跳但没有 buffer/状态文件**：先看
+> `doctor-dsh.ps1` 的「hook 解释器」一节。patch 里的 `python:` 若是已卸载版本
+> （`py -0p` 会保留旧注册项），每个 hook 子进程都会 `spawn ENOENT`，表现为
+> 插件活着、但所有 Python 子命令静默失败。重跑 `install-dsh.ps1`（新版会逐个
+> 验证候选解释器），或把 patch 里的 `python:` 改成存在的绝对路径，再重启 dsh。
+>
 > **启动报 `startup failed: required plugin did not activate`、`typert ... not found`
 > 或 `client bundle not found`**：仓库没有构建产物（或 `node_modules` 不完整）。启动器会
 > 自动检测并执行 `pnpm install` / `pnpm run build`；也可以手动：

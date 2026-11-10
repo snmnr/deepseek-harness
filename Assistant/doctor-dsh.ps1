@@ -77,6 +77,58 @@ if (Test-Path $pluginEntry) {
     Fail "bridge 插件未安装：$pluginEntry"
 }
 
+Section 'hook 解释器（patch 里写死的 python）'
+$pyPath = $null
+$pyProblem = $false
+if (Test-Path $patch) {
+    $pyLine = Select-String -Path $patch -Pattern '^\s*python:\s*(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pyLine) {
+        $pyPath = $pyLine.Matches[0].Groups[1].Value.Trim().Trim("'").Trim('"')
+    }
+}
+if (-not $pyPath) {
+    Warn 'patch 里没有 python: 字段，bridge 会用默认 python'
+} else {
+    Write-Host "  patch 配置：$pyPath"
+    if ($pyPath -match '[/\\]') {
+        if (Test-Path -LiteralPath $pyPath -PathType Leaf) {
+            Ok '路径存在'
+        } else {
+            $pyProblem = $true
+            Fail "路径不存在：$pyPath（hook 子进程会 ENOENT，表现为有心跳但没有 buffer/状态文件）"
+        }
+    }
+    if ((Test-Path -LiteralPath $pyPath -PathType Leaf) -or ($pyPath -notmatch '[/\\]')) {
+        $oldEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $pyVer = & $pyPath -c "import sys; print(sys.version.split()[0])" 2>$null
+        } catch {
+            $pyVer = $null
+        } finally {
+            $ErrorActionPreference = $oldEap
+        }
+        if ($pyVer) {
+            Ok "可执行，版本 $($pyVer | Select-Object -First 1)"
+        } else {
+            $pyProblem = $true
+            Fail "无法执行：$pyPath"
+        }
+    }
+    if ($pyProblem) {
+        $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+        if ($pyLauncher) {
+            Write-Host '  py -0p 候选：'
+            foreach ($line in @(& $pyLauncher.Source -0p 2>$null)) {
+                if ($line -match '(.+\.exe)\s*$') {
+                    $candidate = $Matches[1].Trim()
+                    Write-Host ("    {0,-6} {1}" -f (Test-Path -LiteralPath $candidate), $candidate)
+                }
+            }
+        }
+    }
+}
+
 Section 'bridge 激活心跳'
 $heartbeat = Join-Path $DshHome 'mem0\bridge-alive.json'
 if (Test-Path $heartbeat) {

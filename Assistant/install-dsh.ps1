@@ -169,32 +169,59 @@ foreach ($req in @(
 }
 
 $py = $null
-# 套件脚本要求 Python 3.10+。`py -3` 可能指向很旧的解释器（本机 py -3 是 3.12，
-# 但 PATH 上的 python 是 3.6；某些机器 py -3 也会落到 3.6），所以先读
-# `py -0p` 的解释器清单挑 >=3.10 的，再退回 PATH 上的 python；找不到就报错，
-# 不把低版本写进 patch。
+# 套件脚本要求 Python 3.10+。`py -0p` 会保留已卸载版本（目录删了但注册项还在），
+# 所以每个候选都要 Test-Path + 实际执行验证，不能只看版本号。
+function Test-PythonCandidate {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $oldEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $v = @(& $Path -c "import sys; print(sys.version_info[0], sys.version_info[1])" 2>$null)
+    } catch {
+        $v = @()
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
+    $first = $v | Select-Object -First 1
+    if ("$first" -match '^(\d+)\s+(\d+)') {
+        $maj = [int]$Matches[1]
+        $min = [int]$Matches[2]
+        if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 10)) {
+            return [pscustomobject]@{ Path = $Path; Major = $maj; Minor = $min }
+        }
+    }
+    return $null
+}
+
+$pyCandidates = @()
 $pyLauncher = (Get-Command py -ErrorAction SilentlyContinue).Source
 if ($pyLauncher) {
     try { $pyList = @(& $pyLauncher -0p) } catch { $pyList = @() }
     foreach ($line in $pyList) {
         if ($line -match '^\s*-V:(\d+)\.(\d+)(?:\s+\*)?\s+(.+\.exe)\s*$') {
-            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-            if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 10)) { $py = $Matches[3].Trim(); break }
+            $pyCandidates += $Matches[3].Trim()
         }
     }
+}
+$pathPython = (Get-Command python -ErrorAction SilentlyContinue).Source
+if ($pathPython) { $pyCandidates += $pathPython }
+
+$validPython = @()
+$rejectedPython = @()
+foreach ($candidate in ($pyCandidates | Select-Object -Unique)) {
+    $checked = Test-PythonCandidate $candidate
+    if ($checked) { $validPython += $checked } else { $rejectedPython += $candidate }
+}
+if ($validPython.Count -gt 0) {
+    $py = ($validPython | Sort-Object Major, Minor -Descending | Select-Object -First 1).Path
+}
+if ($rejectedPython.Count -gt 0) {
+    Write-Warning ("忽略不可用的 Python 候选: " + ($rejectedPython -join ', '))
 }
 if (-not $py) {
-    $pathPython = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if ($pathPython) {
-        try { $v = @(& $pathPython -c "import sys; print(sys.version_info[0], sys.version_info[1])") } catch { $v = @() }
-        $first = $v | Select-Object -First 1
-        if ($first -match '^(\d+)\s+(\d+)') {
-            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-            if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 10)) { $py = $pathPython }
-        }
-    }
+    throw '未找到可用的 Python 3.10+。py 清单可能包含已卸载版本；请安装/修复 Python 后重试'
 }
-if (-not $py) { throw '未找到 Python 3.10+（py launcher 清单与 PATH 都没有），请安装后重试' }
 Write-Host "   Python: $py"
 $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
 if (-not $uv) { Write-Warning '未找到 uv；mem0-mcp venv 预建将跳过（首次启动会自动 sync，较慢）' }

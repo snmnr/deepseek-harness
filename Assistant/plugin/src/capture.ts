@@ -37,23 +37,27 @@ export function hookEnv(config: BridgeConfig): Record<string, string> {
   return env
 }
 
-/**
- * Run one hook subcommand to completion. Never throws: failures are logged via
- * `log` and swallowed — a hook error must never block the session (same
- * containment contract as the Python side).
- */
-export function runHookCommand(
+/** One spawn attempt; reports the errno code when the child cannot start. */
+interface HookRunResult {
+  stdout: string
+  stderr: string
+  code: number | null
+  spawnCode?: string
+}
+
+function spawnHookOnce(
   config: BridgeConfig,
   subcommand: string,
   payload: Record<string, unknown>,
   log: (msg: string) => void,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  python: string,
+): Promise<HookRunResult> {
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
     let settled = false
-    const child = spawn(config.python, [config.hooksScript, subcommand], {
+    const child = spawn(python, [config.hooksScript, subcommand], {
       env: { ...process.env, ...hookEnv(config) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -64,17 +68,17 @@ export function runHookCommand(
         log(`mem0-dsh-bridge: ${subcommand} timed out after ${timeoutMs}ms`)
       }
     }, timeoutMs)
-    const finish = (code: number | null) => {
+    const finish = (code: number | null, spawnCode?: string) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolve({ stdout, stderr, code })
+      resolve({ stdout, stderr, code, ...(spawnCode !== undefined ? { spawnCode } : {}) })
     }
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
-    child.on('error', (error) => {
-      log(`mem0-dsh-bridge: ${subcommand} spawn failed: ${String(error)}`)
-      finish(null)
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      log(`mem0-dsh-bridge: ${subcommand} spawn failed (${python}): ${String(error)}`)
+      finish(null, error.code)
     })
     child.on('close', (code) => finish(code))
     try {
@@ -83,6 +87,35 @@ export function runHookCommand(
       log(`mem0-dsh-bridge: ${subcommand} stdin write failed: ${String(error)}`)
     }
   })
+}
+
+/**
+ * Run one hook subcommand to completion. Never throws: failures are logged via
+ * `log` and swallowed — a hook error must never block the session (same
+ * containment contract as the Python side).
+ *
+ * If the configured interpreter cannot be spawned (ENOENT — commonly a stale
+ * `py -0p` entry that no longer exists on disk), retry once with the PATH
+ * `python` (or `$PYTHON`) and remember it for subsequent calls. Without this
+ * fallback every hook fails silently: the bridge heartbeat still updates
+ * because it is written in-process, but no buffers or status files appear.
+ */
+export async function runHookCommand(
+  config: BridgeConfig,
+  subcommand: string,
+  payload: Record<string, unknown>,
+  log: (msg: string) => void,
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  let result = await spawnHookOnce(config, subcommand, payload, log, config.python)
+  if (result.code === null && result.spawnCode === 'ENOENT') {
+    const fallback = process.env.PYTHON || 'python'
+    if (fallback !== config.python) {
+      log(`mem0-dsh-bridge: python not found (${config.python}); retrying ${subcommand} with ${fallback}`)
+      config.python = fallback
+      result = await spawnHookOnce(config, subcommand, payload, log, fallback)
+    }
+  }
+  return { stdout: result.stdout, stderr: result.stderr, code: result.code }
 }
 
 /**
