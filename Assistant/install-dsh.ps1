@@ -47,10 +47,15 @@
 .PARAMETER NonInteractive
   缺连接参数时直接报错，不进入交互询问。
 
+.PARAMETER ResetPatch
+  备份现有 cordis.patch.yml 后重建（只写入 mem0 块）。适用于旧 patch 被写坏、
+  YAML 无法解析的情况；marker 块之外的自定义配置需要从备份里手工移回。
+
 .EXAMPLE
   .\install-dsh.ps1 -DryRun
   .\install-dsh.ps1 -ApiUrl https://mem0.example.com:4430 -ApiKey m0sk_xxx -UserId me
   .\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig
+  .\install-dsh.ps1 -KitDir "$env:USERPROFILE\.mem0-claude" -ReuseClaudeConfig -ResetPatch
 #>
 [CmdletBinding()]
 param(
@@ -71,6 +76,8 @@ param(
     [switch]$SkipUvSync,
     # 缺参数时直接报错，不进入 Read-Host（适合脚本/远程执行）
     [switch]$NonInteractive,
+    # 旧 patch 已损坏 / 无法解析时，备份后重建（只保留 mem0 块）
+    [switch]$ResetPatch,
     [switch]$DryRun
 )
 
@@ -138,7 +145,12 @@ foreach ($req in @(
     @{ p = (Join-Path $AssistDir 'hooks\mem0_hooks_dsh.py'); n = '包装层 mem0_hooks_dsh.py' },
     @{ p = (Join-Path $AssistDir 'plugin\src\index.ts');     n = 'bridge 插件 index.ts' }
 )) {
-    if (-not (Test-Path $req.p)) { throw "缺少 $($req.n): $($req.p)" }
+    if (-not (Test-Path $req.p)) {
+        $hint = if ($req.n -eq '套件 mem0_hooks.py') {
+            '（用 -KitDir 指向套件源码目录，或已安装的 Claude kit 目录如 ~/.mem0-claude；也可设 MEM0_KIT_DIR）'
+        } else { '' }
+        throw "缺少 $($req.n): $($req.p)$hint"
+    }
 }
 
 $py = $null
@@ -440,6 +452,13 @@ $PATCH_MARKER_END
 
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force $ProfileDir | Out-Null
+    if ($ResetPatch -and (Test-Path $PatchPath)) {
+        $patchBackup = $PatchPath + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+        Copy-Item $PatchPath $patchBackup -Force
+        Remove-Item $PatchPath -Force
+        Write-Host "   已备份旧 patch → $patchBackup"
+        Write-Host '   重建后的 patch 只含 mem0 块；marker 之外的自定义配置需从备份手工移回'
+    }
     if (Test-Path $PatchPath) {
         $existing = Get-Content $PatchPath -Raw -Encoding UTF8
         if ($null -eq $existing) { $existing = '' }

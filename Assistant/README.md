@@ -74,6 +74,16 @@ Assistant/
 > `cd ~/.mem0-claude-dsh/mcp && uv sync`）。已安装 Claude kit 的 `.venv` 会被跳过，
 > 不会整目录复制。
 > 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
+>
+> **设备上没有套件源码目录时**（例如只装了 Claude kit）：默认路径会找不到
+> `payload\mem0_hooks.py`，用 `-KitDir "$env:USERPROFILE\.mem0-claude"`（或设
+> `MEM0_KIT_DIR`）指向已安装目录。
+>
+> **启动报 `failed to parse overlay ... cordis.patch.yml`**：说明 patch 文件被写坏
+> （YAML 无法解析，或混入了非列表的自定义配置）。先看
+> `Get-Content "$env:USERPROFILE\.dsh\profiles\web\cordis.patch.yml" -TotalCount 20`；
+> 用 `-ResetPatch` 备份并重建（新文件只含 mem0 块），再把 marker 之外你自己的
+> 模型/provider 配置按 YAML 列表项手工移回。
 
 > **ApiUrl 必须填真实地址。** 它会以 `MEM0_API_URL` 环境变量注入 hook 子进程，
 > 优先级高于 `~/.dsh/mem0/config.json`；残留 `example.com` 占位符时，召回与落盘
