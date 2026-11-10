@@ -113,6 +113,8 @@ interface SessionState {
   resumeText: string | undefined
   /** Set after the resume block was folded into a model step. */
   resumeInjected: boolean
+  /** Status/heartbeat seeded on the first prompt as a fallback. */
+  statusSeeded: boolean
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -147,6 +149,7 @@ export function apply(ctx: Context, config: Config): void {
         resumeChecked: false,
         resumeText: undefined,
         resumeInjected: false,
+        statusSeeded: false,
       }
       states.set(sid, st)
     }
@@ -211,6 +214,15 @@ export function apply(ctx: Context, config: Config): void {
     const text = blocksToText(messages.flatMap(m => m.content))
     st.checkpoint.beginTurn(turn, text || undefined)
     st.exportBuffer.addUser(text, Date.now())
+    // Fallback status seed: `agent/created` may not have run for an existing
+    // session, and the panel should light up as soon as the first prompt lands.
+    if (!st.statusSeeded) {
+      st.statusSeeded = true
+      void writeStatusFile(st.cwd, sid, resolved, log)
+    }
+    // Event-level liveness: doctor compares this timestamp with the process
+    // start to tell "no prompt sent yet" from "events are not reaching us".
+    void writeBridgeHeartbeat(resolved)
     if (st.resumeEligible && !st.resumeChecked && !st.resumeInjected) {
       st.resumeText = await readResumeContext(st.cwd, sid)
       st.resumeChecked = true

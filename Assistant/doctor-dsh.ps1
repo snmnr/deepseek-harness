@@ -23,6 +23,7 @@ $InstallDir = Join-Path $env:USERPROFILE '.mem0-claude-dsh'
 $script:problems = @()
 $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 $dshRunning = $null -ne $listener
+$proc = if ($listener) { Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue } else { $null }
 
 function Section([string]$Title) { Write-Host "`n== $Title ==" -ForegroundColor Cyan }
 function Ok([string]$Message) { Write-Host "  OK    $Message" -ForegroundColor Green }
@@ -83,9 +84,19 @@ if (Test-Path $heartbeat) {
         $hb = Get-Content $heartbeat -Raw -Encoding UTF8 | ConvertFrom-Json
         $hbAt = [datetime]$hb.at
         $ageMin = [int]((Get-Date).ToUniversalTime() - $hbAt.ToUniversalTime()).TotalMinutes
-        Ok "bridge 已激活：PID $($hb.pid)，心跳 $($hb.at)（$ageMin 分钟前）"
+        $afterStart = ''
+        if ($proc) {
+            $afterStart = '，启动后 ' + [int]($hbAt.ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds + ' 秒'
+        }
+        Ok "bridge 已激活：PID $($hb.pid)，心跳 $($hb.at)（$ageMin 分钟前$afterStart）"
         if ($dshRunning -and $ageMin -gt 10) {
             Warn "心跳已 $ageMin 分钟未更新：bridge 可能卡住或进程已停止响应"
+        }
+        if ($proc -and $ageMin -le 10) {
+            $sec = [int]($hbAt.ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds
+            if ($sec -lt 5) {
+                Write-Host '  INFO  心跳只来自插件加载；如果在页面里发过消息，说明事件没有到达 bridge' -ForegroundColor Yellow
+            }
         }
     } catch {
         Warn "bridge-alive.json 无法解析：$heartbeat"
@@ -128,7 +139,6 @@ if (($statusCandidates | Where-Object { Test-Path $_ }).Count -eq 0 -and $docSta
 
 Section '3080 端口'
 if ($listener) {
-    $proc = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
     $procInfo = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
     if ($proc) {
         Ok "监听 3080：PID $($proc.Id) $($proc.ProcessName)，启动于 $($proc.StartTime)"
