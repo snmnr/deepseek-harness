@@ -167,13 +167,16 @@ $env:MEM0_DEFAULT_USER_ID = 'me'
 .\Assistant\start-dsh.ps1 -Check          # 只检查环境，不启动
 .\Assistant\start-dsh.ps1 -Port 3081 -NoOpen
 .\Assistant\start-dsh.ps1 -Install        # 强制重跑 pnpm install（修复依赖）
+.\Assistant\start-dsh.ps1 -Build          # 强制重跑 pnpm run build
+.\Assistant\start-dsh.ps1 -SkipBuild      # 缺构建产物时不自动构建（排查用）
 .\Assistant\start-dsh.ps1 -NoBootstrap    # 缺 pnpm / node_modules 时只报错，不自动补齐
 ```
 
 也可以直接双击 `Assistant\start-dsh.cmd`（等价于无参数运行 `start-dsh.ps1`）。
 
 - 自动补齐：缺 pnpm 时用 `npm install -g pnpm@11.28.5` 安装；缺 `node_modules` 时自动
-  `pnpm install`。Node.js 本身需要 >= 24.9，缺失时给出 winget 安装命令；
+  `pnpm install`；**缺 dsh 构建产物时自动 `pnpm run build`**（首次 5~15 分钟）。
+  构建产物缺失时 dsh 会报 `client bundle not found` / `Cannot find module .../lib/typert.host.js`；
 - 不依赖 Explorer 继承的旧 PATH：会从 `C:\Program Files\nodejs`、`%APPDATA%\npm`
   等常见位置解析 node/pnpm（刚装完 Node 没重启资源管理器也能启动）；
 - 端口被占用会直接报出占用 PID，换 `-Port` 即可；

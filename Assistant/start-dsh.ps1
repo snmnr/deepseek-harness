@@ -19,6 +19,12 @@
 .PARAMETER Install
   强制重新执行 pnpm install（修复依赖）。默认只在 node_modules 缺失时安装。
 
+.PARAMETER Build
+  强制重新执行 pnpm run build。
+
+.PARAMETER SkipBuild
+  缺构建产物时不自动构建（仅排查用；dsh 会报 client bundle / typert not found）。
+
 .PARAMETER NoBootstrap
   不自动补齐环境：缺 pnpm、缺 node_modules 时直接报错退出。
 
@@ -35,6 +41,8 @@ param(
     [int]$Port = 3080,
     [switch]$NoOpen,
     [switch]$Install,
+    [switch]$Build,
+    [switch]$SkipBuild,
     [switch]$NoBootstrap,
     [switch]$Check
 )
@@ -150,6 +158,40 @@ if ($needInstall) {
         Pop-Location
     }
     if ($installCode -ne 0) { Stop-WithError "pnpm install 失败（exit $installCode）。" }
+}
+
+# ---------- 4b. dsh 构建产物 ----------
+# dsh 启动需要 lib/*.js（typert.host.js、client.js 等）；只装依赖不构建会报
+# "client bundle not found" / "Cannot find module .../lib/typert.host.js"。
+$buildMarkers = @(
+    (Join-Path $RepoRoot 'packages\api\gateway\lib\client.browser.js'),
+    (Join-Path $RepoRoot 'packages\typert\loader\lib')
+)
+$missingMarkers = @($buildMarkers | Where-Object { -not (Test-Path $_) })
+if ($Build -or $missingMarkers.Count -gt 0) {
+    if ($Check) {
+        Write-Step "缺少构建产物：$($missingMarkers -join ', ')"
+        Write-Step '运行 .\Assistant\start-dsh.ps1（不带 -Check）会自动执行 pnpm run build'
+        exit 1
+    }
+    if ($SkipBuild) {
+        Write-Warning "缺少构建产物（-SkipBuild）：$($missingMarkers -join ', ')"
+    } else {
+        Write-Step '缺少构建产物，执行 pnpm run build（首次可能 5~15 分钟）...'
+        Push-Location $RepoRoot
+        try {
+            & $pnpmPath run build
+            $buildCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($buildCode -ne 0) { Stop-WithError "pnpm run build 失败（exit $buildCode）。" }
+        $stillMissing = @($buildMarkers | Where-Object { -not (Test-Path $_) })
+        if ($stillMissing.Count -gt 0) {
+            Stop-WithError "构建后仍缺少：$($stillMissing -join ', ')"
+        }
+        Write-Step '构建完成'
+    }
 }
 
 # ---------- 5. 端口 ----------
