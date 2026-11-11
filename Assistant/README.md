@@ -75,9 +75,11 @@ Assistant/
 > 不会整目录复制。
 >
 > **部分 Claude kit 的 `mcp` 目录只有 `src/` 和 `.venv`，没有 `pyproject.toml`**
-> （`uv sync` 会报 `No pyproject.toml found`）。安装器会复用该 kit 的
-> `mcp\.venv\Scripts\mem0-mcp.exe`，把 patch 的 `command` 写成这个 exe、`args: []`；
-> 两条路都没有时会告警。`doctor-dsh.ps1` 的「mem0 MCP 启动方式」会显示实际选择。
+> （`uv sync` 会报 `No pyproject.toml found`）。安装器按顺序选择 mem0-mcp 源码：
+> 套件目录 → **仓库自带的 `Assistant\payload\mem0-mcp`** → 套件源码的
+> `payload\mem0-mcp`。只有源码都缺失时，才复用已安装 kit 的 venv；而且会校验
+> `pyvenv.cfg`、`Scripts\python.exe`、`Lib\site-packages`、`mem0_mcp` 是否齐全，
+> 空壳 venv 不再被当作可用。`doctor-dsh.ps1` 的「mem0 MCP 启动方式」会显示实际选择。
 >
 > 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
 >

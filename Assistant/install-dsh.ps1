@@ -119,6 +119,28 @@ if (-not (Test-Path $KitMcp)) {
     $installedMcp = Join-Path $KitPayload 'mcp'
     if (Test-Path $installedMcp) { $KitMcp = $installedMcp }
 }
+# mem0-mcp 源码回退：已安装 kit 的 mcp/ 可能是空壳（只有坏的 .venv），
+# 优先用仓库自带的 Assistant/payload/mem0-mcp，其次套件源码的 payload/mem0-mcp。
+$McpSource = $KitMcp
+if (-not (Test-Path (Join-Path $McpSource 'pyproject.toml'))) {
+    foreach ($mcpCandidate in @(
+        (Join-Path $AssistDir 'payload\mem0-mcp'),
+        (Join-Path $KitDir 'payload\mem0-mcp')
+    )) {
+        if (Test-Path (Join-Path $mcpCandidate 'pyproject.toml')) { $McpSource = $mcpCandidate; break }
+    }
+}
+
+# venv 只有“看起来像”不行：py -0p 的教训同样适用于空的 .venv。
+function Test-Mem0Venv {
+    param([string]$Root)
+    if (-not $Root) { return $false }
+    $cfg = Join-Path $Root 'pyvenv.cfg'
+    $python = Join-Path $Root 'Scripts\python.exe'
+    $site = Join-Path $Root 'Lib\site-packages'
+    $exe = Join-Path $Root 'Scripts\mem0-mcp.exe'
+    return (Test-Path $cfg) -and (Test-Path $python) -and (Test-Path $site) -and (Test-Path $exe)
+}
 $Home2     = $env:USERPROFILE
 $DshHome      = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $Home2 '.dsh' }
 $AgentsHome   = if ($env:DSH_AGENTS_HOME) { $env:DSH_AGENTS_HOME } else { Join-Path $Home2 '.agents' }
@@ -152,11 +174,12 @@ function Write-Utf8NoBom { param([string]$Path, [string]$Text)
 Write-Host '== mem0-claude-kit → dsh 安装 ==' -ForegroundColor Green
 if ($KitVersion) { Write-Host "   套件版本: $KitVersion" }
 Write-Host "   套件源: $KitDir"
+if ($McpSource -ne $KitMcp) { Write-Host "   mem0-mcp 源: $McpSource（回退）" }
 if ($DryRun) { Write-Host '（DryRun 模式：不写任何文件）' -ForegroundColor Yellow }
 
 foreach ($req in @(
     @{ p = (Join-Path $KitPayload 'mem0_hooks.py'); n = '套件 mem0_hooks.py' },
-    @{ p = $KitMcp;                                n = '套件 mem0-mcp' },
+    @{ p = $McpSource;                            n = '套件 mem0-mcp' },
     @{ p = (Join-Path $AssistDir 'hooks\mem0_hooks_dsh.py'); n = '包装层 mem0_hooks_dsh.py' },
     @{ p = (Join-Path $AssistDir 'plugin\src\index.ts');     n = 'bridge 插件 index.ts' }
 )) {
@@ -229,6 +252,7 @@ if (-not $uv) { Write-Warning '未找到 uv；mem0-mcp venv 预建将跳过（�
 # / broken（源码既无 pyproject 也无可用 venv）。
 $mcpMode = 'normal'
 $uvSyncOk = $false
+$venvExe = $null
 
 # 已有环境变量 / Claude kit 配置时直接用，不再交互询问。
 # 优先级：显式参数 > 环境变量 > ~/.claude/mem0/config.json（默认自动读，-NoReuseClaudeConfig 关闭）。
@@ -292,30 +316,36 @@ if (-not $DryRun) {
     }
 }
 
-Write-Plan "2. 复制 mem0-mcp 源码 → $InstallDir\mcp"
+Write-Plan "2. 复制 mem0-mcp 源码（$McpSource）→ $InstallDir\mcp"
 if (-not $DryRun) {
     $mcpDest = Join-Path $InstallDir 'mcp'
     if (Test-Path $mcpDest) { Remove-Item -Recurse -Force $mcpDest }
     New-Item -ItemType Directory -Force $mcpDest | Out-Null
     # 已安装 Claude kit 的 mcp/ 里常带 .venv：venv 内是绝对路径，复制过去也不能用，
     # 文件又很多（卡住的主因之一）。跳过它，由下面的 uv sync 重建。
-    if (Test-Path (Join-Path $KitMcp '.venv')) {
+    if (Test-Path (Join-Path $McpSource '.venv')) {
         Write-Host '   跳过套件自带 .venv（目标环境重新 uv sync）'
     }
     Write-Host '   复制 mem0-mcp 源码...'
-    Get-ChildItem -LiteralPath $KitMcp -Force | Where-Object { $_.Name -ne '.venv' } | ForEach-Object {
+    Get-ChildItem -LiteralPath $McpSource -Force | Where-Object { $_.Name -ne '.venv' } | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $mcpDest -Recurse -Force
     }
     if (-not (Test-Path (Join-Path $mcpDest 'pyproject.toml'))) {
         # 某些 Claude kit 安装目录只有 src/.venv，没有 pyproject.toml；uv run 无法工作。
-        # 优先复用套件现有 venv 里的入口；否则明确告警，避免写出生效不了的 patch。
-        $installedExe = Join-Path $KitMcp '.venv\Scripts\mem0-mcp.exe'
-        if (Test-Path $installedExe) {
+        # 只复用“完整”的 venv：空壳 .venv 只有 exe，启动时报 No pyvenv.cfg。
+        $venvCandidates = @(
+            (Join-Path $McpSource '.venv'),
+            (Join-Path $KitMcp '.venv')
+        ) | Where-Object { $_ } | Select-Object -Unique
+        $validVenv = $venvCandidates | Where-Object { Test-Mem0Venv $_ } | Select-Object -First 1
+        if ($validVenv) {
             $mcpMode = 'venv-exe'
-            Write-Warning "复制的 mem0-mcp 缺少 pyproject.toml；改用套件现有 venv：$installedExe"
+            $venvExe = Join-Path $validVenv 'Scripts\mem0-mcp.exe'
+            Write-Warning "复制的 mem0-mcp 缺少 pyproject.toml；改用完整 venv：$venvExe"
         } else {
             $mcpMode = 'broken'
-            Write-Warning "复制的 mem0-mcp 缺少 pyproject.toml，且找不到 .venv\Scripts\mem0-mcp.exe；mem0 MCP 将无法启动（检查 $KitMcp）"
+            Write-Warning "mem0-mcp 缺少 pyproject.toml，也没有完整 venv（需 pyvenv.cfg + Scripts\python.exe + Lib\site-packages + mem0-mcp.exe）；mem0 MCP 将无法启动"
+            Write-Warning "修复：重装 Claude kit，或用 -KitDir 指向套件源码目录（含 payload\mem0-mcp\pyproject.toml）"
         }
     } elseif ($SkipUvSync) {
         Write-Host '   已跳过 uv sync（-SkipUvSync）：首次启动 dsh 时会自动同步'
@@ -469,8 +499,8 @@ $pyFwd = $py -replace '\\','/'
 #   normal   → uv run（--no-sync 只在本次真的 sync 成功时使用）
 #   venv-exe → 复用已安装 kit 的 mem0-mcp.exe（源码没有 pyproject.toml 时）
 #   broken   → 仍写 uv run，启动会失败，但安装器已告警
-if ($mcpMode -eq 'venv-exe') {
-    $mcpCommand = ((Join-Path $KitMcp '.venv\Scripts\mem0-mcp.exe') -replace '\\','/')
+if ($mcpMode -eq 'venv-exe' -and $venvExe) {
+    $mcpCommand = ($venvExe -replace '\\','/')
     $mcpArgs = '[]'
 } else {
     $mcpCommand = $uvForward

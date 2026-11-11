@@ -144,11 +144,22 @@ if (-not $mcpCmd) {
         if (Test-Path -LiteralPath $mcpCmd -PathType Leaf) { Ok '命令文件存在' } else { Fail "命令文件不存在：$mcpCmd" }
     }
     if ($mcpCmd -match 'mem0-mcp\.exe$') {
-        Ok '复用已安装 Claude kit 的 venv（源码没有 pyproject.toml 时的回退）'
+        $scriptsDir = Split-Path -Parent $mcpCmd
+        $venvRoot = Split-Path -Parent $scriptsDir
+        $venvOk = (Test-Path (Join-Path $venvRoot 'pyvenv.cfg')) -and
+                  (Test-Path (Join-Path $scriptsDir 'python.exe')) -and
+                  (Test-Path (Join-Path $venvRoot 'Lib\site-packages')) -and
+                  (Test-Path (Join-Path $venvRoot 'Lib\site-packages\mem0_mcp'))
+        if ($venvOk) {
+            Ok '复用 Claude kit venv（venv 完整）'
+        } else {
+            Fail 'mem0-mcp.exe 所在的 venv 不完整（缺 pyvenv.cfg / Scripts\python.exe / Lib\site-packages / mem0_mcp）；这个 exe 启动会立刻退出'
+            Write-Host '        修复：重装 Claude kit，或重跑 install-dsh（仓库自带 Assistant\payload\mem0-mcp 会作为回退）'
+        }
     } elseif (Test-Path (Join-Path $InstallDir 'mcp\pyproject.toml')) {
         Ok 'uv run 项目（mcp\pyproject.toml 存在）'
     } else {
-        Warn 'mcp 源码缺少 pyproject.toml，且不是 venv-exe：mem0 MCP 可能启动失败'
+        Warn 'mcp 源码缺少 pyproject.toml，且不是完整 venv-exe：mem0 MCP 可能启动失败'
     }
 }
 
