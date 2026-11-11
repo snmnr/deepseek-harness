@@ -144,6 +144,12 @@ describe('SSE framing and provider failures', () => {
   it.each(['data: not-json\n\n', 'data: []\n\n', 'event: ping\ndata: {"type":"other"}\n\n', 'data: {}\n\n'])('rejects malformed SSE %#', async (text) => {
     await expect(read(text)).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
   })
+  it('reports an HTML gateway page as an upstream failure with a snippet', async () => {
+    await expect(read('event: error\ndata: <html><head><title>502 Bad Gateway</title></head></html>\n\n')).rejects.toMatchObject({
+      code: 'SERVER',
+      message: expect.stringContaining('HTML error page'),
+    })
+  })
   it('does not flush an unterminated terminal event', async () => {
     await expect(read(sse(textEvents).trimEnd())).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
   })
