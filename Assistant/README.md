@@ -73,6 +73,12 @@ Assistant/
 > 去掉 patch 里的 `--no-sync`，首次启动 dsh 时由 `uv run` 自动同步（也可提前手动
 > `cd ~/.mem0-claude-dsh/mcp && uv sync`）。已安装 Claude kit 的 `.venv` 会被跳过，
 > 不会整目录复制。
+>
+> **部分 Claude kit 的 `mcp` 目录只有 `src/` 和 `.venv`，没有 `pyproject.toml`**
+> （`uv sync` 会报 `No pyproject.toml found`）。安装器会复用该 kit 的
+> `mcp\.venv\Scripts\mem0-mcp.exe`，把 patch 的 `command` 写成这个 exe、`args: []`；
+> 两条路都没有时会告警。`doctor-dsh.ps1` 的「mem0 MCP 启动方式」会显示实际选择。
+>
 > 需要脚本化安装时加 `-NonInteractive`：缺参数直接报错，不会停在 `Read-Host`。
 >
 > **面板灰、`bridge-alive.json` 有心跳但没有 buffer/状态文件**：先看

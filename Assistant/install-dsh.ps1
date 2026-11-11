@@ -225,6 +225,10 @@ if (-not $py) {
 Write-Host "   Python: $py"
 $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
 if (-not $uv) { Write-Warning '未找到 uv；mem0-mcp venv 预建将跳过（首次启动会自动 sync，较慢）' }
+# mem0-mcp 的启动方式：normal（uv run 项目）/ venv-exe（复用已安装 kit 的 venv）
+# / broken（源码既无 pyproject 也无可用 venv）。
+$mcpMode = 'normal'
+$uvSyncOk = $false
 
 # 已有环境变量 / Claude kit 配置时直接用，不再交互询问。
 # 优先级：显式参数 > 环境变量 > ~/.claude/mem0/config.json（默认自动读，-NoReuseClaudeConfig 关闭）。
@@ -302,7 +306,18 @@ if (-not $DryRun) {
     Get-ChildItem -LiteralPath $KitMcp -Force | Where-Object { $_.Name -ne '.venv' } | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $mcpDest -Recurse -Force
     }
-    if ($SkipUvSync) {
+    if (-not (Test-Path (Join-Path $mcpDest 'pyproject.toml'))) {
+        # 某些 Claude kit 安装目录只有 src/.venv，没有 pyproject.toml；uv run 无法工作。
+        # 优先复用套件现有 venv 里的入口；否则明确告警，避免写出生效不了的 patch。
+        $installedExe = Join-Path $KitMcp '.venv\Scripts\mem0-mcp.exe'
+        if (Test-Path $installedExe) {
+            $mcpMode = 'venv-exe'
+            Write-Warning "复制的 mem0-mcp 缺少 pyproject.toml；改用套件现有 venv：$installedExe"
+        } else {
+            $mcpMode = 'broken'
+            Write-Warning "复制的 mem0-mcp 缺少 pyproject.toml，且找不到 .venv\Scripts\mem0-mcp.exe；mem0 MCP 将无法启动（检查 $KitMcp）"
+        }
+    } elseif ($SkipUvSync) {
         Write-Host '   已跳过 uv sync（-SkipUvSync）：首次启动 dsh 时会自动同步'
     } elseif ($uv) {
         Write-Host '   开始 uv sync（首次可能 1~3 分钟，静默；可加 -SkipUvSync 跳过）...'
@@ -312,6 +327,7 @@ if (-not $DryRun) {
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "uv sync 失败（exit $LASTEXITCODE）；首次启动 dsh 时会重试"
             } else {
+                $uvSyncOk = $true
                 Write-Host '   uv sync 完成'
             }
         } finally { Pop-Location }
@@ -449,12 +465,20 @@ $hooksJsonPath = (Join-Path $InstallDir 'hooks\hooks.json') -replace '\\','/'
 $dataFwd = $DataDir -replace '\\','/'
 $pyFwd = $py -replace '\\','/'
 
-# --no-sync 只有在安装时真的建好了 venv 才能用；-SkipUvSync（或找不到 uv）时
-# 目标 mcp/ 没有 .venv，带着它会让 mem0 MCP 启动即失败，所以改为首次启动自动同步。
-$uvRunArgs = if ($uv -and -not $SkipUvSync) {
-    "['run', '--no-sync', '--directory', '$installFwd/mcp', 'mem0-mcp']"
+# mem0 MCP 的启动方式：
+#   normal   → uv run（--no-sync 只在本次真的 sync 成功时使用）
+#   venv-exe → 复用已安装 kit 的 mem0-mcp.exe（源码没有 pyproject.toml 时）
+#   broken   → 仍写 uv run，启动会失败，但安装器已告警
+if ($mcpMode -eq 'venv-exe') {
+    $mcpCommand = ((Join-Path $KitMcp '.venv\Scripts\mem0-mcp.exe') -replace '\\','/')
+    $mcpArgs = '[]'
 } else {
-    "['run', '--directory', '$installFwd/mcp', 'mem0-mcp']"
+    $mcpCommand = $uvForward
+    $mcpArgs = if ($uv -and $uvSyncOk) {
+        "['run', '--no-sync', '--directory', '$installFwd/mcp', 'mem0-mcp']"
+    } else {
+        "['run', '--directory', '$installFwd/mcp', 'mem0-mcp']"
+    }
 }
 $patchBlock = @"
 $PATCH_MARKER_BEGIN
@@ -465,8 +489,8 @@ $PATCH_MARKER_BEGIN
     servers:
       mem0:
         transport: stdio
-        command: '$uvForward'
-        args: $uvRunArgs
+        command: '$mcpCommand'
+        args: $mcpArgs
         env:
           MEM0_API_URL: '$ApiUrl'
           MEM0_API_KEY: '`${credential:MEM0_API_KEY}'

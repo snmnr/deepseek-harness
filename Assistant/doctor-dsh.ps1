@@ -130,6 +130,28 @@ if (-not $pyPath) {
     }
 }
 
+Section 'mem0 MCP 启动方式'
+$mcpCmd = $null
+if (Test-Path $patch) {
+    $cmdLine = Select-String -Path $patch -Pattern '^\s+command:\s*(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmdLine) { $mcpCmd = $cmdLine.Matches[0].Groups[1].Value.Trim().Trim("'").Trim('"') }
+}
+if (-not $mcpCmd) {
+    Warn 'patch 里没有 MCP command'
+} else {
+    Write-Host "  command: $mcpCmd"
+    if ($mcpCmd -match '[/\\]') {
+        if (Test-Path -LiteralPath $mcpCmd -PathType Leaf) { Ok '命令文件存在' } else { Fail "命令文件不存在：$mcpCmd" }
+    }
+    if ($mcpCmd -match 'mem0-mcp\.exe$') {
+        Ok '复用已安装 Claude kit 的 venv（源码没有 pyproject.toml 时的回退）'
+    } elseif (Test-Path (Join-Path $InstallDir 'mcp\pyproject.toml')) {
+        Ok 'uv run 项目（mcp\pyproject.toml 存在）'
+    } else {
+        Warn 'mcp 源码缺少 pyproject.toml，且不是 venv-exe：mem0 MCP 可能启动失败'
+    }
+}
+
 Section 'bridge 激活心跳'
 $heartbeat = Join-Path $DshHome 'mem0\bridge-alive.json'
 if (Test-Path $heartbeat) {
