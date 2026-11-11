@@ -556,6 +556,14 @@ function Get-ForeignMarkerEntries {
     $current = $null
     $known = $false
     foreach ($line in ($Block -split "`r?`n")) {
+        # BEGIN/END 注释不属于任何条目；遇到它们立即结束当前条目，
+        # 否则最后一条非 mem0 条目会把旧的 end 注释一起搬到块外，产生重复标记。
+        if ($line -match '^#\s*mem0-claude-kit:dsh\s+(begin|end)\b') {
+            if ($current -and -not $known) { $entries += (($current -join "`r`n").TrimEnd()) }
+            $current = $null
+            $known = $false
+            continue
+        }
         if ($line -match '^-\s') {
             if ($current -and -not $known) { $entries += (($current -join "`r`n").TrimEnd()) }
             $current = @($line)
@@ -608,6 +616,22 @@ if (-not $DryRun) {
                     Write-Host "   已保留 marker 块内的非 mem0 条目 $($kept.Count) 条（移到 end 之后）"
                 }
                 $merged = $existing.Substring(0, $match.Index) + $replacement + $existing.Substring($match.Index + $match.Length)
+                # 旧版本可能已经留下重复的 end 注释；只保留第一个。
+                $mergedLines = $merged -split "`r?`n"
+                $endCount = @($mergedLines | Where-Object { $_.Trim() -eq $PATCH_MARKER_END }).Count
+                if ($endCount -gt 1) {
+                    $seenEnd = $false
+                    $cleaned = New-Object System.Collections.Generic.List[string]
+                    foreach ($line in $mergedLines) {
+                        if ($line.Trim() -eq $PATCH_MARKER_END) {
+                            if ($seenEnd) { continue }
+                            $seenEnd = $true
+                        }
+                        $cleaned.Add($line) | Out-Null
+                    }
+                    $merged = ($cleaned -join "`r`n")
+                    Write-Host "   清理了 $($endCount - 1) 个重复的 end 标记"
+                }
                 Write-Utf8NoBom $PatchPath $merged
             } else {
                 Write-Utf8NoBom $PatchPath ($existing.TrimEnd([char[]]"`r`n") + "`r`n" + $patchBlock + "`r`n")
