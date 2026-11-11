@@ -494,23 +494,70 @@ $PATCH_MARKER_BEGIN
 $PATCH_MARKER_END
 "@
 
+# 从 marker 块里提取“非 mem0”的顶层条目（例如用户误放的 - id: llm-deepseek）。
+# marker 块归安装器所有，替换前把这些条目移到 end 之后，避免重装丢模型配置。
+function Get-ForeignMarkerEntries {
+    param([string]$Block)
+    $entries = @()
+    $current = $null
+    $known = $false
+    foreach ($line in ($Block -split "`r?`n")) {
+        if ($line -match '^-\s') {
+            if ($current -and -not $known) { $entries += (($current -join "`r`n").TrimEnd()) }
+            $current = @($line)
+            $known = ($line -match '^-\s+id:\s*(mcp-manager|mem0-dsh-ui)\b') -or ($line -match '^-\s+insert:\s*$')
+        } elseif ($current) {
+            $current += $line
+        }
+    }
+    if ($current -and -not $known) { $entries += (($current -join "`r`n").TrimEnd()) }
+    return $entries
+}
+
 if (-not $DryRun) {
     New-Item -ItemType Directory -Force $ProfileDir | Out-Null
-    if ($ResetPatch -and (Test-Path $PatchPath)) {
+    if (Test-Path $PatchPath) {
+        # 任何改写前都先备份；模型/provider 配置若在 marker 块内，至少还能找回。
         $patchBackup = $PatchPath + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
         Copy-Item $PatchPath $patchBackup -Force
+        Write-Host "   已备份 patch → $patchBackup"
+    }
+    if ($ResetPatch -and (Test-Path $PatchPath)) {
         Remove-Item $PatchPath -Force
-        Write-Host "   已备份旧 patch → $patchBackup"
-        Write-Host '   重建后的 patch 只含 mem0 块；marker 之外的自定义配置需从备份手工移回'
+        Write-Host '   -ResetPatch：已删除旧 patch，下面重建（只含 mem0 块；自定义配置需从备份移回）'
     }
     if (Test-Path $PatchPath) {
         $existing = Get-Content $PatchPath -Raw -Encoding UTF8
         if ($null -eq $existing) { $existing = '' }
         if ($existing -match [regex]::Escape($PATCH_MARKER_BEGIN)) {
-            # 幂等替换旧块
+            # 幂等替换旧块；块内的非 mem0 条目自动移到 end 之后。
             $pattern = "(?s)" + [regex]::Escape($PATCH_MARKER_BEGIN) + ".*?" + [regex]::Escape($PATCH_MARKER_END)
-            $merged = [regex]::Replace($existing, $pattern, $patchBlock.Replace('$', '$$'))
-            Write-Utf8NoBom $PatchPath $merged
+            $match = [regex]::Match($existing, $pattern)
+            if ($match.Success) {
+                $foreign = @(Get-ForeignMarkerEntries $match.Value)
+                $outside = $existing.Substring(0, $match.Index) + $existing.Substring($match.Index + $match.Length)
+                $kept = @()
+                foreach ($entry in $foreign) {
+                    $idMatch = [regex]::Match($entry, '(?m)^\s*-\s+id:\s*([A-Za-z0-9._-]+)')
+                    if ($idMatch.Success -and $outside -match ('(?m)^\s*-\s+id:\s*' + [regex]::Escape($idMatch.Groups[1].Value) + '\s*$')) {
+                        Write-Warning "marker 块内的条目 $($idMatch.Groups[1].Value) 在块外已存在，跳过搬移"
+                        continue
+                    }
+                    $kept += $entry
+                }
+                if ($match.Value -match '(?m)^\s+-\s+id:\s*(llm|dsh-llm|provider)') {
+                    Write-Warning 'marker 块内还有嵌套的模型/provider 配置，无法安全自动搬移；请从备份手工移到 end 之后'
+                }
+                $replacement = $patchBlock
+                if ($kept.Count -gt 0) {
+                    $replacement = $replacement.TrimEnd() + "`r`n`r`n# 以下条目原本写在 mem0 marker 块内，安装器已自动移到块外`r`n" + ($kept -join "`r`n`r`n") + "`r`n"
+                    Write-Host "   已保留 marker 块内的非 mem0 条目 $($kept.Count) 条（移到 end 之后）"
+                }
+                $merged = $existing.Substring(0, $match.Index) + $replacement + $existing.Substring($match.Index + $match.Length)
+                Write-Utf8NoBom $PatchPath $merged
+            } else {
+                Write-Utf8NoBom $PatchPath ($existing.TrimEnd([char[]]"`r`n") + "`r`n" + $patchBlock + "`r`n")
+            }
         } else {
             Write-Utf8NoBom $PatchPath ($existing.TrimEnd([char[]]"`r`n") + "`r`n" + $patchBlock + "`r`n")
         }

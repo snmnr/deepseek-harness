@@ -115,3 +115,4 @@ python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py report --dry-run
 |---|---|
 | 1.7.23 | `context_guard` v1.8.0（55/75/90 档、PostToolUse 检查、PreCompact 强制 checkpoint、`CONTEXT_GUARD_TOKENS`）；`mem0_hooks` 1.7.22（doctor/report/dead-letter/flush 锁）；tools 生命周期布局、指针去重、`--plan-layout/--reconcile` |
 | 1.7.24 | `_post` 连接失败重试（`MEM0_FLUSH_ATTEMPTS`，默认 3 次，仅连接类错误）；`retry-pending` 子命令与 `report-detached` 顺带补落盘（`MEM0_RETRY_MIN_AGE_SECONDS`，默认 60s）；上报新增 `pending_oldest_minutes`、`last_flush_error_age_minutes` |
+| 1.7.25–1.7.30 | `mem0_hooks`：活跃缓冲超过 `MEM0_FORCE_FLUSH_CHARS`（默认 20000 字）也会落盘，不再只等会话闲置；落盘回写改用 `_write_remaining`，并发追加时不会用旧快照覆盖新事件。`tools`：新增 `--staging` / `--manifest-suffix`；知识文档标题自动带项目名；`create_folder` 后重新拉取节点，避免重复建目录；include/exclude 回退到项目模板 |

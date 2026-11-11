@@ -171,7 +171,11 @@ $env:MEM0_DEFAULT_USER_ID = 'me'
 >
 > marker 块（`# mem0-claude-kit:dsh begin` … `end`）之间的内容归安装器所有，
 > 重装时整体替换。你自己的 profile 配置（模型、provider、主题等）必须写在
-> marker 块**外**，否则会被静默覆盖。
+> marker 块**外**，否则可能被覆盖。安装器现在会先备份 patch，并把旧块内**顶层**的
+> 非 mem0 条目（如误放的 `- id: llm-deepseek`）自动移到 `end` 之后；嵌套在
+> `- insert:` 里的配置无法安全搬移，会告警。
+>
+> 修改 patch（模型/provider 等）后必须**重启 dsh**：配置在启动时加载，热更新不一定生效。
 
 ## 一键启动
 
@@ -245,6 +249,10 @@ dead-letter、doctor、状态上报）单点留在套件原 `mem0_hooks.py`，�
 ```powershell
 python ~/.mem0-claude-dsh/hooks/mem0_hooks_dsh.py retry-pending
 ```
+
+1.7.26+ 起，活跃会话的缓冲超过 `MEM0_FORCE_FLUSH_CHARS`（默认 20000 字）也会
+强制落盘，不再只等会话结束；落盘回写改为 `_write_remaining`，落盘期间新追加的
+事件不会被旧快照覆盖。
 
 ## 验证
 

@@ -24,6 +24,7 @@ $script:problems = @()
 $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 $dshRunning = $null -ne $listener
 $proc = if ($listener) { Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue } else { $null }
+$buffers = @(Get-ChildItem (Join-Path $DshHome 'mem0') -Filter 'buffer_*.json' -ErrorAction SilentlyContinue)
 
 function Section([string]$Title) { Write-Host "`n== $Title ==" -ForegroundColor Cyan }
 function Ok([string]$Message) { Write-Host "  OK    $Message" -ForegroundColor Green }
@@ -141,8 +142,10 @@ if (Test-Path $heartbeat) {
             $afterStart = '，启动后 ' + [int]($hbAt.ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds + ' 秒'
         }
         Ok "bridge 已激活：PID $($hb.pid)，心跳 $($hb.at)（$ageMin 分钟前$afterStart）"
-        if ($dshRunning -and $ageMin -gt 10) {
-            Warn "心跳已 $ageMin 分钟未更新：bridge 可能卡住或进程已停止响应"
+        if ($dshRunning -and $ageMin -gt 10 -and $buffers.Count -gt 0) {
+            Warn "有积压但心跳已 $ageMin 分钟未更新：bridge 可能卡住"
+        } elseif ($dshRunning -and $ageMin -gt 10) {
+            Write-Host '  INFO  心跳只在会话边界更新；空闲超过 10 分钟不更新属正常'
         }
         if ($proc -and $ageMin -le 10) {
             $sec = [int]($hbAt.ToUniversalTime() - $proc.StartTime.ToUniversalTime()).TotalSeconds
@@ -160,7 +163,6 @@ if (Test-Path $heartbeat) {
 }
 
 Section '会话数据与状态文件'
-$buffers = @(Get-ChildItem (Join-Path $DshHome 'mem0') -Filter 'buffer_*.json' -ErrorAction SilentlyContinue)
 if ($buffers.Count -gt 0) {
     Ok "缓冲文件 $($buffers.Count) 个（bridge 在采集）"
     $buffers | Sort-Object LastWriteTime -Descending | Select-Object -First 5 |

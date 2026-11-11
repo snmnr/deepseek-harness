@@ -72,6 +72,8 @@ function usage() {
   --exclude <glob>      排除匹配的 md（可重复）
   --flat                不保留子目录，全部放在 AI-Docs/<项目>/
   --no-pointer          不往 mem0 写“文档已发布”的指针记忆
+  --staging             发到暂存 workspace（config.stagingWorkspaceId），manifest 加 -staging
+  --manifest-suffix <s> 给 manifest/status/lock 加后缀（默认空）
   --plan-layout         只读预演：打印生命周期目录路由，不写 AFFiNE
   --reconcile           只读对账：列出 manifest 中源文件已不存在的文档
   --manifest <路径>     指定 manifest（测试用；默认按项目根计算）
@@ -80,7 +82,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const out = { root: null, project: null, preview: false, force: false, flat: null, noPointer: false, includes: [], excludes: [], planLayout: false, reconcile: false, manifest: null, jsonOut: null };
+  const out = { root: null, project: null, preview: false, force: false, flat: null, noPointer: false, includes: [], excludes: [], planLayout: false, reconcile: false, manifest: null, manifestSuffix: '', jsonOut: null, staging: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { usage(); process.exit(0); }
@@ -92,6 +94,8 @@ function parseArgs(argv) {
     else if (a === '--plan-layout') out.planLayout = true;
     else if (a === '--reconcile') out.reconcile = true;
     else if (a === '--manifest') out.manifest = argv[++i];
+    else if (a === '--manifest-suffix') out.manifestSuffix = String(argv[++i] || '');
+    else if (a === '--staging') out.staging = true;
     else if (a === '--json-out') out.jsonOut = argv[++i];
     else if (a === '--include') out.includes.push(argv[++i]);
     else if (a === '--exclude') out.excludes.push(argv[++i]);
@@ -108,20 +112,35 @@ if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
 }
 
 const cfgFile = path.join(ROOT, '.affine-docs.config.json');
+const HAS_PROJECT_CFG = fs.existsSync(cfgFile);
 let fileCfg = {};
-if (fs.existsSync(cfgFile)) {
+if (HAS_PROJECT_CFG) {
   try { fileCfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8')); } catch { fileCfg = {}; }
+}
+// 暂存模式：checkpoint 等原始过程记录发到独立 workspace，不污染主 workspace。
+// manifest 加 -staging 后缀，避免把主 workspace 的 docId 误用于另一个 workspace。
+if (ARGS.staging) {
+  const stWs = process.env.AFFINE_STAGING_WORKSPACE_ID || FILE_CFG.stagingWorkspaceId;
+  if (!stWs) throw new Error('缺少 stagingWorkspaceId：请在 ~/.affine-docs/config.json 设置，或设 AFFINE_STAGING_WORKSPACE_ID');
+  CONFIG.workspaceId = stWs;
+  CONFIG.rootFolder = process.env.AFFINE_STAGING_ROOT_FOLDER || FILE_CFG.stagingRootFolder || 'AI/AI-Logs';
+  ARGS.manifestSuffix = ARGS.manifestSuffix || '-staging';
 }
 const PROJECT = String(ARGS.project || fileCfg.project || path.basename(ROOT)).trim() || 'project';
 const FLAT = ARGS.flat ?? Boolean(fileCfg.flat);
+// 项目没有 .affine-docs.config.json 时套用全局 projectTemplate，
+// 保证任何项目/文件夹都不会因为「忘了写配置」而漏发布。
+const TEMPLATE = FILE_CFG.projectTemplate || {};
+const CFG_INCLUDE = ARGS.staging ? [] : (HAS_PROJECT_CFG ? (fileCfg.include || []) : (TEMPLATE.include || []));
+const CFG_EXCLUDE = ARGS.staging ? [] : (HAS_PROJECT_CFG ? (fileCfg.exclude || []) : (TEMPLATE.exclude || []));
 // CLI --include 覆盖配置文件（而不是追加）：只想发一篇时不该仍然扫全项目
-const INCLUDE = ARGS.includes.length ? ARGS.includes : (fileCfg.include || []);
-const EXCLUDE = [...(fileCfg.exclude || []), ...ARGS.excludes];
+const INCLUDE = ARGS.includes.length ? ARGS.includes : CFG_INCLUDE;
+const EXCLUDE = [...CFG_EXCLUDE, ...ARGS.excludes];
 
 const STATE_ID = sha(ROOT).slice(0, 16);
-const MANIFEST = path.join(CONFIG.stateDir, 'manifests', `${STATE_ID}.json`);
-const STATUS = path.join(CONFIG.stateDir, 'status', `${STATE_ID}.json`);
-const LOCK = path.join(CONFIG.stateDir, 'locks', `${STATE_ID}.lock`);
+const MANIFEST = path.join(CONFIG.stateDir, 'manifests', `${STATE_ID}${ARGS.manifestSuffix}.json`);
+const STATUS = path.join(CONFIG.stateDir, 'status', `${STATE_ID}${ARGS.manifestSuffix}.json`);
+const LOCK = path.join(CONFIG.stateDir, 'locks', `${STATE_ID}${ARGS.manifestSuffix}.lock`);
 for (const d of [path.dirname(MANIFEST), path.dirname(STATUS), path.dirname(LOCK)]) {
   fs.mkdirSync(d, { recursive: true });
 }
@@ -192,6 +211,27 @@ function titleOf(md, rel) {
   const m = md.match(/^#\s+(.+)$/m);
   return m ? m[1].trim() : path.basename(rel, '.md');
 }
+// 知识文档标题带项目名，便于跨库检索时自带项目线索；
+// 日志类（checkpoint/handoff/过程摘要）保持固定标题，主题只放正文摘要——
+// 标题命中在 SAG 排序里优先级最高，日志标题带主题会抢占知识文档的位置。
+const GENERIC_TITLES = new Set([
+  'readme', '说明', '索引', '目录', '总览', '文档', '手册', '指南',
+  '部署手册', '使用手册', '设计说明', '变更记录',
+]);
+function normTitleKey(s) {
+  return String(s || '').toLowerCase().replace(/[\s_\-—:：,，.。()（）\[\]【】]/g, '');
+}
+function displayTitle(rel, meta, raw) {
+  const h1 = titleOf(raw, rel);
+  if (normalizeKind(rel, meta) === 'log') return h1;
+  if (h1.startsWith(`${PROJECT} ·`) || h1.startsWith(`${PROJECT}·`)) return h1;
+  const key = normTitleKey(h1);
+  if (GENERIC_TITLES.has(key)) {
+    const parent = path.posix.basename(path.posix.dirname(rel));
+    if (parent && parent !== '.' && parent !== PROJECT) return `${PROJECT} · ${parent} · ${h1}`;
+  }
+  return `${PROJECT} · ${h1}`;
+}
 function bodyOf(md) {
   return md.replace(/^#\s+.+\r?\n/, '').trimStart();
 }
@@ -221,11 +261,14 @@ function parseFrontmatter(md) {
 }
 
 // 生命周期目录：知识 / 过程记录 / 归档。默认值保持与现有发布行为兼容。
-const LAYOUT = {
-  knowledgeRoot: fileCfg.layout?.knowledgeRoot || CONFIG.rootFolder || 'AI/AI-Docs',
-  logsRoot: fileCfg.layout?.logsRoot || 'AI/AI-Logs',
-  archiveRoot: fileCfg.layout?.archiveRoot || 'AI/AI-Archive',
-};
+// 暂存模式统一落到 stagingRootFolder，不套用项目自己的 layout。
+const LAYOUT = ARGS.staging
+  ? { knowledgeRoot: CONFIG.rootFolder, logsRoot: CONFIG.rootFolder, archiveRoot: CONFIG.rootFolder }
+  : {
+      knowledgeRoot: fileCfg.layout?.knowledgeRoot || CONFIG.rootFolder || 'AI/AI-Docs',
+      logsRoot: fileCfg.layout?.logsRoot || 'AI/AI-Logs',
+      archiveRoot: fileCfg.layout?.archiveRoot || 'AI/AI-Archive',
+    };
 const KIND_LOG = new Set(['log', 'checkpoint', 'handoff', 'distill', 'auto-checkpoint', 'working-note']);
 const KIND_KNOWLEDGE = new Set([
   'knowledge', 'design', 'runbook', 'reference', 'roadmap',
@@ -512,12 +555,17 @@ async function ensureFolder(segments) {
   for (const name of segments) {
     const found = nodes.find((n) => n.type === 'folder' && (n.parentId ?? null) === parentId && nodeName(n) === name);
     if (found) { parentId = found.id; continue; }
-    const created = await callTool('create_folder', {
+    await callTool('create_folder', {
       workspaceId: CONFIG.workspaceId, name, ...(parentId ? { parentId } : {}),
     });
-    nodes.push({ id: created.id, parentId, type: 'folder', data: name });
-    parentId = created.id;
     log(`created folder ${segments.join('/')}`);
+    // 以服务端返回的节点为准重新拉取：create_folder 的返回结构可能不是 {id}，
+    // 直接 push 会导致缓存里没有可用 id、同一目录被反复创建。
+    nodes = null;
+    await loadNodes();
+    const made = nodes.find((n) => n.type === 'folder' && (n.parentId ?? null) === parentId && nodeName(n) === name);
+    if (!made) throw new Error(`create_folder 后找不到目录：${segments.join('/')}`);
+    parentId = made.id;
   }
   return parentId;
 }
@@ -598,7 +646,7 @@ async function main() {
   fs.writeFileSync(LOCK, String(Date.now()));
   manifest = readManifest();
   const files = walk(ROOT).sort((a, b) => a.rel.localeCompare(b.rel));
-  log(`project=${PROJECT} root=${ROOT} files=${files.length}`);
+  log(`project=${PROJECT} root=${ROOT} files=${files.length} workspace=${CONFIG.workspaceId}${ARGS.staging ? ' (staging)' : ''}`);
   if (files.length > CONFIG.maxFiles) {
     throw new Error(`md 文件过多（${files.length}），超过上限 ${CONFIG.maxFiles}；请用 --include 缩小范围`);
   }
@@ -619,7 +667,7 @@ async function main() {
         log(`SKIPPED ${msg}`);
         continue;
       }
-      const title = titleOf(raw, f.rel);
+      const title = displayTitle(f.rel, meta, raw);
       const body = splitWideTables(fixDocLinks(bodyOf(raw), f.rel));
       // hash 用解析后的正文：首轮发布时目标文档可能还没建好，.md 引用会退化成行内代码；
       // 等全部文档建好后，下一轮 hash 会变化并自动重写，链接最终收敛。
@@ -627,13 +675,13 @@ async function main() {
       const hash = sha(`project-docs-v2\n${body}`);
       const prev = manifest[f.rel];
 
-      if (prev && prev.hash === hash && !ARGS.force) { skipped++; continue; }
+      if (prev && prev.hash === hash && prev.title === title && !ARGS.force) { skipped++; continue; }
       if (ARGS.preview) {
         const previewDir = FLAT ? '' : path.posix.dirname(f.rel);
         const previewTarget = prev?.docId
           ? (prev.folder || `${CONFIG.rootFolder}/${PROJECT}/${previewDir}`)
           : [routeFor(f.rel, meta).root, PROJECT, ...(previewDir && previewDir !== '.' ? [previewDir] : [])].join('/');
-        changes.push(`${prev?.docId ? 'update' : 'create'} ${f.rel} -> ${previewTarget}`);
+        changes.push(`${prev?.docId ? 'update' : 'create'} ${f.rel} -> ${previewTarget} (title: ${title})`);
         continue;
       }
 
