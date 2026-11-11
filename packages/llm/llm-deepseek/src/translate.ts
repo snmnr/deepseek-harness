@@ -11,6 +11,13 @@ interface Block {
   replay: ReplayBlock
   closed: boolean
   json: string
+  /**
+   * True when the block-start already carried the full tool input (an object or
+   * a JSON string). Some Anthropic-compatible proxies forward OpenAI's
+   * `function.arguments` verbatim instead of emitting `input_json_delta`;
+   * appending deltas in that case would corrupt the JSON.
+   */
+  fixedJson: boolean
 }
 
 /** Decode a required string from provider JSON.
@@ -42,24 +49,59 @@ function updateUsage(usage: TokenUsage, raw: unknown): void {
   }
 }
 
+/**
+ * Normalize the tool input carried by `content_block_start`.
+ *
+ * Anthropic sends `{}` and streams the real arguments through
+ * `input_json_delta`. Compatible proxies sometimes send the complete JSON as a
+ * string (OpenAI `function.arguments`) or omit/null it. Accept those forms;
+ * arrays and other primitives remain malformed.
+ * @param value - provider `content_block.input`.
+ * @returns initial argument text and whether later deltas must be ignored.
+ */
+function initialToolInput(value: unknown): { arguments: string; json: string; fixed: boolean } {
+  if (value === undefined || value === null) return { arguments: '{}', json: '', fixed: false }
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (text === '' || text === '{}') return { arguments: '{}', json: '', fixed: false }
+    let completeObject = false
+    try {
+      const parsed: unknown = JSON.parse(text)
+      completeObject = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+    } catch (_partialInitialJson) {
+      // A partial JSON prefix is completed by later input_json_delta events.
+    }
+    return { arguments: text, json: text, fixed: completeObject }
+  }
+  const input = object(value)
+  const text = JSON.stringify(input)
+  return { arguments: text, json: text === '{}' ? '' : text, fixed: text !== '{}' }
+}
+
 function startBlock(event: Record<string, unknown>, index: number): Block {
   const native = object(event.content_block)
   let content: Block['content']
   let replay: ReplayBlock
+  let json = ''
+  let fixedJson = false
   switch (native.type) {
     case 'text': content = { type: 'text', text: string(native.text) }; replay = { type: 'text' }; break
     case 'thinking':
       content = { type: 'reasoning', text: string(native.thinking) }
       replay = { type: 'reasoning', ...native.signature === undefined ? {} : { signature: string(native.signature) } }
       break
-    case 'tool_use':
-      content = { type: 'tool-call', id: ToolCallId(string(native.id)), name: string(native.name), arguments: JSON.stringify(object(native.input)) }
+    case 'tool_use': {
+      const initial = initialToolInput(native.input)
+      content = { type: 'tool-call', id: ToolCallId(string(native.id)), name: string(native.name), arguments: initial.arguments }
       if (!content.id || !content.name) return malformed('empty tool identity')
+      json = initial.json
+      fixedJson = initial.fixed
       replay = { type: 'tool-call' }
       break
+    }
     default: throw new LlmError(`DeepSeek Messages does not support response block ${String(native.type)}`, 'UNSUPPORTED_CONTENT')
   }
-  return { index, content, replay, closed: false, json: '' }
+  return { index, content, replay, closed: false, json, fixedJson }
 }
 
 function deltaChunk(block: Block, raw: unknown): StreamChunk | undefined {
@@ -80,6 +122,9 @@ function deltaChunk(block: Block, raw: unknown): StreamChunk | undefined {
     return undefined
   }
   if (delta.type === 'input_json_delta' && content.type === 'tool-call') {
+    // The block-start already held the complete input (proxy forwarded
+    // `function.arguments` as a string); appending deltas would duplicate it.
+    if (block.fixedJson) return undefined
     const argumentsDelta = string(delta.partial_json)
     block.json += argumentsDelta
     return { type: 'tool-call-delta', index: block.index, id: content.id, argumentsDelta }

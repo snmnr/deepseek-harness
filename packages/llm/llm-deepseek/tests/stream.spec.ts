@@ -46,6 +46,37 @@ describe('Messages stream', () => {
     expect(result.message.content[0]).toMatchObject({ arguments: JSON.stringify(input) })
   })
 
+  it('accepts a tool input forwarded as a JSON string (OpenAI-style proxy)', async () => {
+    const result = await assemble(translate(events([start,
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'a', name: 'read', input: '{"path":"a"}' } },
+      { type: 'content_block_stop', index: 0 }, ...end('tool_use')]), MODEL))
+    expect(result.message.content[0]).toMatchObject({ arguments: '{"path":"a"}' })
+  })
+
+  it('does not duplicate deltas after an initial string tool input', async () => {
+    const result = await assemble(translate(events([start,
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'a', name: 'read', input: '{"path":"a"}' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"a"}' } },
+      { type: 'content_block_stop', index: 0 }, ...end('tool_use')]), MODEL))
+    expect(result.message.content[0]).toMatchObject({ arguments: '{"path":"a"}' })
+  })
+
+  it('accepts a partial initial string tool input completed by deltas', async () => {
+    const result = await assemble(translate(events([start,
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'a', name: 'read', input: '{"path":' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"a"}' } },
+      { type: 'content_block_stop', index: 0 }, ...end('tool_use')]), MODEL))
+    expect(result.message.content[0]).toMatchObject({ arguments: '{"path":"a"}' })
+  })
+
+  it.each([undefined, null, ''])('accepts missing or empty initial tool input %j and streams deltas', async (input) => {
+    const result = await assemble(translate(events([start,
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'a', name: 'read', input } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":"a"}' } },
+      { type: 'content_block_stop', index: 0 }, ...end('tool_use')]), MODEL))
+    expect(result.message.content[0]).toMatchObject({ arguments: '{"path":"a"}' })
+  })
+
   it('preserves signature-only thinking and prunes truncated tools with their replay entries', async () => {
     const result = await assemble(translate(events([start,
       { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
